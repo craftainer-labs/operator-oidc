@@ -280,13 +280,22 @@ var _ = Describe("The oidc.craftainer.dev CRDs", func() {
 				})
 			}
 
-			It("requires at least one and at most 20", func() {
-				rejected(create(oidcClientObj("none")), "redirectUris")
+			It("requires at least one with authorization_code and at most 20", func() {
+				rejected(create(oidcClientObj("none")), "redirectUris needs at least one URI")
+				withRefresh := oidcClientObj("none-refresh")
+				withRefresh.Spec.GrantTypes = []oidcv1alpha1.GrantType{oidcv1alpha1.GrantAuthorizationCode, oidcv1alpha1.GrantRefreshToken}
+				rejected(create(withRefresh), "redirectUris needs at least one URI")
 				var many []string
 				for i := range 21 {
 					many = append(many, fmt.Sprintf("https://app%d.example.com/cb", i))
 				}
 				rejected(create(oidcClientObj("many", many...)), "redirectUris")
+			})
+
+			It("needs none for a client_credentials-only client", func() {
+				c := oidcClientObj("service")
+				c.Spec.GrantTypes = []oidcv1alpha1.GrantType{oidcv1alpha1.GrantClientCredentials}
+				Expect(create(c)).To(Succeed())
 			})
 
 			It("rejects a duplicate", func() {

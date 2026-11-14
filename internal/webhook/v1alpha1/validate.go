@@ -64,8 +64,8 @@ func validateProvider(spec *oidcv1alpha1.ProviderConfig, proxyURL string) field.
 func validateClient(spec *oidcv1alpha1.OidcClientSpec) field.ErrorList {
 	var errs field.ErrorList
 	path := field.NewPath("spec")
-	if len(spec.RedirectURIs) == 0 {
-		errs = append(errs, field.Required(path.Child("redirectUris"), "at least one redirect URI is required"))
+	if len(spec.RedirectURIs) == 0 && usesAuthorizationCode(spec.GrantTypes) {
+		errs = append(errs, field.Required(path.Child("redirectUris"), "at least one redirect URI is required for the authorization_code grant"))
 	}
 	for i, uri := range spec.RedirectURIs {
 		if msg := RedirectURIProblem(string(uri), spec.Public); msg != "" {
@@ -83,6 +83,13 @@ func validateClient(spec *oidcv1alpha1.OidcClientSpec) field.ErrorList {
 		}
 	}
 	return errs
+}
+
+// usesAuthorizationCode says whether a client with these grant types uses the
+// authorization_code grant: an empty list counts, because the CRD defaults an
+// unset grantTypes to it.
+func usesAuthorizationCode(grants []oidcv1alpha1.GrantType) bool {
+	return len(grants) == 0 || slices.Contains(grants, oidcv1alpha1.GrantAuthorizationCode)
 }
 
 // httpsURLProblem says what is wrong with an https URL of a provider (issuer,

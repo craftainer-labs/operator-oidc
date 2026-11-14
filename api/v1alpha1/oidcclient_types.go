@@ -90,7 +90,8 @@ type WebOrigin string
 // +kubebuilder:validation:XValidation:rule="!self.public || !('client_credentials' in self.grantTypes)",message="the client_credentials grant needs a confidential client (public: false)"
 // +kubebuilder:validation:XValidation:rule="!has(self.tokenEndpointAuthMethod) || (self.tokenEndpointAuthMethod == 'none') == self.public",message="tokenEndpointAuthMethod none is for public clients and only for them"
 // +kubebuilder:validation:XValidation:rule="!self.public || self.pkce != 'Disabled'",message="a public client must use PKCE: pkce Disabled is not allowed"
-// +kubebuilder:validation:XValidation:rule="self.public || (!self.redirectUris.exists(u, u.startsWith('http://')) && (!has(self.postLogoutRedirectUris) || !self.postLogoutRedirectUris.exists(u, u.startsWith('http://'))) && (!has(self.webOrigins) || !self.webOrigins.exists(o, o.startsWith('http://'))))",message="an http loopback URI or origin is allowed only on a public client (public: true); a confidential client needs https"
+// +kubebuilder:validation:XValidation:rule="self.public || ((!has(self.redirectUris) || !self.redirectUris.exists(u, u.startsWith('http://'))) && (!has(self.postLogoutRedirectUris) || !self.postLogoutRedirectUris.exists(u, u.startsWith('http://'))) && (!has(self.webOrigins) || !self.webOrigins.exists(o, o.startsWith('http://'))))",message="an http loopback URI or origin is allowed only on a public client (public: true); a confidential client needs https"
+// +kubebuilder:validation:XValidation:rule="!('authorization_code' in self.grantTypes) || (has(self.redirectUris) && self.redirectUris.size() > 0)",message="redirectUris needs at least one URI when grantTypes includes authorization_code (an unset grantTypes defaults to it)"
 type OidcClientSpec struct {
 	common.ClaimCommon `json:",inline"`
 	common.Credentials `json:",inline"`
@@ -103,11 +104,14 @@ type OidcClientSpec struct {
 	Public bool `json:"public,omitempty"`
 
 	// redirectUris are the exact URIs the provider may redirect to after login.
+	// At least one is required when grantTypes includes authorization_code
+	// (which an unset grantTypes defaults to); a client_credentials-only client
+	// needs none.
 	//
-	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=20
 	// +listType=set
-	RedirectURIs []RedirectURI `json:"redirectUris"`
+	// +optional
+	RedirectURIs []RedirectURI `json:"redirectUris,omitempty"`
 
 	// postLogoutRedirectUris are the exact URIs the provider may redirect to
 	// after logout, with the same rules as redirectUris.
