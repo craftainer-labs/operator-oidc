@@ -39,7 +39,9 @@ carries no credentials.
 
 An `OidcClient` is confidential by default (it gets a secret, and may rotate it
 with `rotationPolicy`) or `public: true` (no secret, PKCE required, no
-`client_credentials` grant). Its `redirectUris`, `postLogoutRedirectUris` and
+`client_credentials` grant). Its `redirectUris` (needed when `grantTypes`
+includes `authorization_code`, which an unset `grantTypes` defaults to; a
+`client_credentials`-only client needs none), `postLogoutRedirectUris` and
 `webOrigins` are exact values, validated when the object is admitted:
 
 - `https` only. `http` is allowed for the hosts `localhost` and `127.0.0.1`

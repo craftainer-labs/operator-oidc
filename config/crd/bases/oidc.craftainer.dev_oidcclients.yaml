@@ -163,8 +163,11 @@ spec:
                   has no secret, so no binding Secret holds a clientSecret.
                 type: boolean
               redirectUris:
-                description: redirectUris are the exact URIs the provider may redirect
-                  to after login.
+                description: |-
+                  redirectUris are the exact URIs the provider may redirect to after login.
+                  At least one is required when grantTypes includes authorization_code
+                  (which an unset grantTypes defaults to); a client_credentials-only client
+                  needs none.
                 items:
                   description: |-
                     RedirectURI is a redirect or post-logout redirect URI. It is an exact URI,
@@ -196,7 +199,6 @@ spec:
                     rule: '!self.startsWith(''http://'') || url(self).getHostname()
                       in [''localhost'', ''127.0.0.1'']'
                 maxItems: 20
-                minItems: 1
                 type: array
                 x-kubernetes-list-type: set
               rotationPolicy:
@@ -295,7 +297,6 @@ spec:
                 type: array
                 x-kubernetes-list-type: set
             required:
-            - redirectUris
             - serverRef
             type: object
             x-kubernetes-validations:
@@ -318,10 +319,14 @@ spec:
               rule: '!self.public || self.pkce != ''Disabled'''
             - message: 'an http loopback URI or origin is allowed only on a public
                 client (public: true); a confidential client needs https'
-              rule: self.public || (!self.redirectUris.exists(u, u.startsWith('http://'))
-                && (!has(self.postLogoutRedirectUris) || !self.postLogoutRedirectUris.exists(u,
-                u.startsWith('http://'))) && (!has(self.webOrigins) || !self.webOrigins.exists(o,
-                o.startsWith('http://'))))
+              rule: self.public || ((!has(self.redirectUris) || !self.redirectUris.exists(u,
+                u.startsWith('http://'))) && (!has(self.postLogoutRedirectUris) ||
+                !self.postLogoutRedirectUris.exists(u, u.startsWith('http://'))) &&
+                (!has(self.webOrigins) || !self.webOrigins.exists(o, o.startsWith('http://'))))
+            - message: redirectUris needs at least one URI when grantTypes includes
+                authorization_code (an unset grantTypes defaults to it)
+              rule: '!(''authorization_code'' in self.grantTypes) || (has(self.redirectUris)
+                && self.redirectUris.size() > 0)'
           status:
             description: status defines the observed state of OidcClient
             properties:
