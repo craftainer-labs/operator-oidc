@@ -60,7 +60,9 @@ type ClusterIdentityProviderList struct {
 func (s *ClusterIdentityProvider) GetCommon() *common.ServerCommon { return &s.Spec.ServerCommon }
 
 // GetServerStatus returns the status the probe writes (probe.Server).
-func (s *ClusterIdentityProvider) GetServerStatus() *common.ServerStatus { return &s.Status.ServerStatus }
+func (s *ClusterIdentityProvider) GetServerStatus() *common.ServerStatus {
+	return &s.Status.ServerStatus
+}
 
 // GetEndpoint returns the server's URL, the Keycloak base URL or the registration endpoint.
 func (s *ClusterIdentityProvider) GetEndpoint() string { return s.Spec.Endpoint() }

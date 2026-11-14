@@ -52,13 +52,6 @@ const (
 	PKCEDisabled PKCEMode = "Disabled"
 )
 
-// RedirectURI is a redirect or post-logout redirect URI. It is an exact URI,
-// never a pattern: https, or http only for the loopback hosts localhost and
-// 127.0.0.1 (which a public client alone may use, see the OidcClientSpec rules);
-// no wildcard, no fragment and no userinfo. The rules compare the parsed host
-// exactly, because a prefix or regex match would accept
-// http://localhost.evil.example. The webhook parses the URI again.
-//
 // +kubebuilder:validation:MinLength=1
 // +kubebuilder:validation:MaxLength=2048
 // +kubebuilder:validation:XValidation:rule="self.matches('^[]-~!-[]+$')",message="must contain only printable ASCII characters, without spaces or backslashes"
@@ -68,6 +61,13 @@ const (
 // +kubebuilder:validation:XValidation:rule="!self.contains('@')",message="userinfo (user@host) is not allowed"
 // +kubebuilder:validation:XValidation:rule="isURL(self) && url(self).getHostname() != ''",message="must be an absolute URL with a host"
 // +kubebuilder:validation:XValidation:rule="!self.startsWith('http://') || url(self).getHostname() in ['localhost', '127.0.0.1']",message="an http URI must have the host localhost or 127.0.0.1 exactly"
+
+// RedirectURI is a redirect or post-logout redirect URI. It is an exact URI,
+// never a pattern: https, or http only for the loopback hosts localhost and
+// 127.0.0.1 (which a public client alone may use, see the OidcClientSpec rules);
+// no wildcard, no fragment and no userinfo. The rules compare the parsed host
+// exactly, because a prefix or regex match would accept
+// http://localhost.evil.example. The webhook parses the URI again.
 type RedirectURI string
 
 // WebOrigin is an origin allowed to call the client's endpoints from a browser

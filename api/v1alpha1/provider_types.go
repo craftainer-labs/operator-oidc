@@ -26,17 +26,17 @@ const (
 // +kubebuilder:validation:Pattern=`^[]-~!#-[]+$`
 type Scope string
 
-// HTTPSURL is an absolute https URL with a host, as the provider kinds'
-// URL fields need: printable ASCII without space and backslash, no userinfo
-// (@), no query (?) and no fragment (#). The webhooks check the parsed URL
-// again.
-//
 // +kubebuilder:validation:MinLength=1
 // +kubebuilder:validation:MaxLength=512
 // +kubebuilder:validation:XValidation:rule="self.matches('^[]-~!-[]+$')",message="must contain only printable ASCII characters, without spaces or backslashes"
 // +kubebuilder:validation:XValidation:rule="self.startsWith('https://') && isURL(self) && url(self).getHostname() != ''",message="must be an https URL with a host"
 // +kubebuilder:validation:XValidation:rule="!self.contains('@')",message="must not carry credentials (user@host)"
 // +kubebuilder:validation:XValidation:rule="!self.contains('?') && !self.contains('#')",message="must not have a query or a fragment"
+
+// HTTPSURL is an absolute https URL with a host, as the provider kinds'
+// URL fields need: printable ASCII without space and backslash, no userinfo
+// (@), no query (?) and no fragment (#). The webhooks check the parsed URL
+// again.
 type HTTPSURL string
 
 // KeycloakConfig is the Keycloak block of a provider of type Keycloak. The
@@ -172,4 +172,3 @@ type IdentityProviderStatus struct {
 	// +optional
 	Discovery *Discovery `json:"discovery,omitempty"`
 }
-

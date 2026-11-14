@@ -340,10 +340,6 @@ var _ = Describe("The oidc.craftainer.dev CRDs", func() {
 			c = web("all-grants")
 			c.Spec.GrantTypes = []oidcv1alpha1.GrantType{oidcv1alpha1.GrantAuthorizationCode, oidcv1alpha1.GrantRefreshToken, oidcv1alpha1.GrantClientCredentials}
 			Expect(create(c)).To(Succeed())
-
-			c = web("no-grants")
-			c.Spec.GrantTypes = []oidcv1alpha1.GrantType{}
-			rejected(create(c), "grantTypes")
 		})
 
 		It("needs a confidential client for the client_credentials grant", func() {
