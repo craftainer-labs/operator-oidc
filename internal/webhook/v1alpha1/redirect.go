@@ -28,7 +28,7 @@ var loopbackHosts = []string{"localhost", "127.0.0.1"}
 
 // RedirectURIProblem says what is wrong with a redirect or post-logout
 // redirect URI of a client, or returns "" for an acceptable one. public says
-// whether the client is a public one. The controller (NO6b) is to call it too, so a
+// whether the client is a public one. The controller is to call it too, so a
 // client that reached the cluster without admission (the webhook disabled, a
 // restored backup) is refused before anything is registered with the
 // provider. Until the controller exists, the CRD's CEL rules, which are looser,

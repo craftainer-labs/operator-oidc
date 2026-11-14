@@ -58,9 +58,9 @@ func validateProvider(spec *oidcv1alpha1.ProviderConfig, proxyURL string) field.
 }
 
 // validateClient checks every redirect URI, post-logout redirect URI and web
-// origin of an OidcClient. The CRD's CEL rules say the same; this parses the
-// URL, which CEL cannot do for every case, and keeps the rule in force if the
-// CRD is ever changed or replaced.
+// origin of an OidcClient. The CRD's CEL rules are a looser version of the same
+// rules; this parses the URL and checks the host and the port, which CEL cannot
+// do, and keeps the rules in force if the CRD is ever changed or replaced.
 func validateClient(spec *oidcv1alpha1.OidcClientSpec) field.ErrorList {
 	var errs field.ErrorList
 	path := field.NewPath("spec")
@@ -167,6 +167,9 @@ func validHost(host string) bool {
 // proxyProblem says what is wrong with a proxy URL, or returns "" for a good
 // one: an http, https or socks5 URL with a host and without userinfo.
 func proxyProblem(raw string) string {
+	if strings.Contains(raw, "@") {
+		return "must not carry credentials (user:password@); proxy credentials are not supported"
+	}
 	if msg := plainURLProblem(raw); msg != "" {
 		return msg
 	}
@@ -174,16 +177,14 @@ func proxyProblem(raw string) string {
 		return "must not have a query or a fragment"
 	}
 	u, err := url.Parse(raw)
-	if err != nil || !slices.Contains([]string{"http", "https", "socks5"}, u.Scheme) || u.Hostname() == "" {
+	if err != nil || !slices.Contains([]string{"http", "https", "socks5"}, u.Scheme) || u.Hostname() == "" ||
+		u.Opaque != "" || strings.HasSuffix(u.Host, ":") {
 		return "must be an http, https or socks5 URL with a host"
 	}
 	if p := u.Port(); p != "" {
 		if n, err := strconv.Atoi(p); err != nil || n < 1 || n > 65535 {
 			return "port must be between 1 and 65535"
 		}
-	}
-	if !validHost(u.Hostname()) {
-		return "must have a host name or an IP address as its host"
 	}
 	return ""
 }
