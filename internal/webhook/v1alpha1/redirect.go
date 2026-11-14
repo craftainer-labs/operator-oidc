@@ -5,8 +5,9 @@ import "strings"
 // A redirect URI is an exact string the identity provider will send the user
 // agent, and a code or token, to. A pattern, a looser scheme or a host that
 // only looks like another host turns the provider into an open redirector, so
-// the rules below are strict and each has a test. They are the same rules as
-// the CEL rules of api/v1alpha1.RedirectURI, plus a real URL parse:
+// the rules below are strict and each has a test. They include the CEL rules of
+// api/v1alpha1.RedirectURI and add what CEL cannot judge (a real URL parse, the
+// host syntax and the port range), so this is the full check:
 //
 //   - printable ASCII only: no space, control character, non-ASCII character
 //     or backslash (parsers and browsers read a backslash as a slash);
@@ -14,7 +15,8 @@ import "strings"
 //     userinfo (an "@" anywhere, so "https://good.example@evil.example" is out);
 //   - the scheme is https, or http for the loopback hosts localhost and
 //     127.0.0.1 only. The parsed host is compared exactly: a prefix or regex
-//     match would accept http://localhost.evil.example. [::1] is not allowed.
+//     match would accept http://localhost.evil.example. http://[::1] is not
+//     allowed (https URIs may have any valid host, an IP address included).
 //     An http URI is allowed on a public client only, the native or
 //     single-page apps RFC 8252 describes; a confidential client needs https;
 //   - javascript:, data:, custom schemes and relative URIs are not https or
@@ -26,10 +28,11 @@ var loopbackHosts = []string{"localhost", "127.0.0.1"}
 
 // RedirectURIProblem says what is wrong with a redirect or post-logout
 // redirect URI of a client, or returns "" for an acceptable one. public says
-// whether the client is a public one. The controller calls it too, so a client
-// that reached the cluster without admission (the webhook down while its
-// failurePolicy was changed, a restored backup) is still refused before
-// anything is registered with the provider.
+// whether the client is a public one. The controller (NO6b) is to call it too, so a
+// client that reached the cluster without admission (the webhook disabled, a
+// restored backup) is refused before anything is registered with the
+// provider. Until the controller exists, the CRD's CEL rules, which are looser,
+// are the only check besides the webhook.
 func RedirectURIProblem(raw string, public bool) string {
 	if msg := plainURLProblem(raw); msg != "" {
 		return msg

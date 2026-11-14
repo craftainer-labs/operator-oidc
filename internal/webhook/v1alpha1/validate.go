@@ -147,16 +147,32 @@ func parseHostURL(raw string) (*url.URL, string) {
 // validHost reports whether host is an IP address or a DNS-1123 subdomain
 // (case-insensitive, as host names are; one trailing dot, the fully qualified
 // form, is accepted).
+//
+// A name whose last label is all digits or starts with "0x" is refused: it is
+// not a host name (RFC 3696, section 2) but, to a browser or a resolver, a
+// shorthand IP address (https://2130706433, https://127.1, https://0x7f.1) that
+// would slip past every loopback and internal-address rule.
 func validHost(host string) bool {
 	if net.ParseIP(host) != nil {
 		return true
 	}
-	return len(validation.IsDNS1123Subdomain(strings.ToLower(strings.TrimSuffix(host, ".")))) == 0
+	name := strings.ToLower(strings.TrimSuffix(host, "."))
+	last := name[strings.LastIndex(name, ".")+1:]
+	if last != "" && (strings.HasPrefix(last, "0x") || strings.Trim(last, "0123456789") == "") {
+		return false
+	}
+	return len(validation.IsDNS1123Subdomain(name)) == 0
 }
 
 // proxyProblem says what is wrong with a proxy URL, or returns "" for a good
 // one: an http, https or socks5 URL with a host and without userinfo.
 func proxyProblem(raw string) string {
+	if msg := plainURLProblem(raw); msg != "" {
+		return msg
+	}
+	if strings.ContainsAny(raw, "?#") {
+		return "must not have a query or a fragment"
+	}
 	u, err := url.Parse(raw)
 	if err != nil || !slices.Contains([]string{"http", "https", "socks5"}, u.Scheme) || u.Hostname() == "" {
 		return "must be an http, https or socks5 URL with a host"
@@ -166,8 +182,8 @@ func proxyProblem(raw string) string {
 			return "port must be between 1 and 65535"
 		}
 	}
-	if u.User != nil {
-		return "must not carry credentials (user:password@); proxy credentials are not supported"
+	if !validHost(u.Hostname()) {
+		return "must have a host name or an IP address as its host"
 	}
 	return ""
 }

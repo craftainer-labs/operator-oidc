@@ -2,6 +2,7 @@ package v1alpha1
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -86,6 +87,10 @@ var providerCases = []struct {
 	{name: "malformed proxy", cfg: providerConfig(goodIssuer, goodBase), proxy: "http://[::1", field: "spec.proxyURL", message: "http, https or socks5"},
 	{name: "proxy with a user", cfg: providerConfig(goodIssuer, goodBase), proxy: "http://user@proxy:3128", field: "spec.proxyURL", message: "must not carry credentials"},
 	{name: "proxy with a password", cfg: providerConfig(goodIssuer, goodBase), proxy: "socks5://user:hunter2@proxy:1080", field: "spec.proxyURL", message: "must not carry credentials"},
+	{name: "proxy with a space", cfg: providerConfig(goodIssuer, goodBase), proxy: "http://proxy:3128/a b", field: "spec.proxyURL", message: "printable ASCII"},
+	{name: "proxy with a query", cfg: providerConfig(goodIssuer, goodBase), proxy: "socks5://proxy:1080?x=y", field: "spec.proxyURL", message: "query or a fragment"},
+	{name: "proxy with a bad host", cfg: providerConfig(goodIssuer, goodBase), proxy: "http://-/", field: "spec.proxyURL", message: "host name or an IP address"},
+	{name: "proxy that is too long", cfg: providerConfig(goodIssuer, goodBase), proxy: "http://proxy/" + strings.Repeat("a", 2100), field: "spec.proxyURL", message: "between 1 and 2048"},
 	{name: "valid proxy port bounds", cfg: providerConfig(goodIssuer, goodBase), proxy: "http://proxy:65535"},
 	{name: "proxy port too high", cfg: providerConfig(goodIssuer, goodBase), proxy: "http://proxy:65536", field: "spec.proxyURL", message: "port must be between 1 and 65535"},
 	{name: "proxy port zero", cfg: providerConfig(goodIssuer, goodBase), proxy: "http://proxy:0", field: "spec.proxyURL", message: "port must be between 1 and 65535"},
