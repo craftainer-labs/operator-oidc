@@ -66,7 +66,7 @@ func readFile(name string) ([]byte, error) {
 	if path == "" {
 		return nil, fmt.Errorf("%s is not set", name)
 	}
-	return os.ReadFile(path)
+	return os.ReadFile(path) //nolint:gosec // the path is a test setting
 }
 
 func setup() error {
@@ -102,7 +102,7 @@ func setup() error {
 			break
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("keycloak does not answer: %v (status %d)", err, st)
+			return fmt.Errorf("keycloak does not answer (status %d): %w", st, err)
 		}
 		time.Sleep(2 * time.Second)
 	}
@@ -150,7 +150,7 @@ func admin(method, path string, body any) (int, http.Header, []byte, error) {
 		"grant_type": {"password"}, "client_id": {"admin-cli"}, "username": {adminUse}, "password": {adminPw},
 	})
 	if err != nil || st != 200 {
-		return st, nil, nil, fmt.Errorf("master token: status %d, %v", st, err)
+		return st, nil, nil, fmt.Errorf("master token: status %d: %w", st, err)
 	}
 	var tok struct {
 		AccessToken string `json:"access_token"`
@@ -252,7 +252,7 @@ func clientUUID(clientID string) (string, error) {
 		ID string `json:"id"`
 	}
 	if err := json.Unmarshal(data, &list); err != nil || len(list) != 1 {
-		return "", fmt.Errorf("client %s: %v, %d found", clientID, err, len(list))
+		return "", fmt.Errorf("client %s: %d found: %w", clientID, len(list), err)
 	}
 	return list[0].ID, nil
 }
