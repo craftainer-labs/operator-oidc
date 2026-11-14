@@ -1,0 +1,14 @@
+apiVersion: oidc.craftainer.dev/v1alpha1
+kind: OidcClient
+metadata:
+  labels:
+    app.kubernetes.io/name: operator-oidc
+    app.kubernetes.io/managed-by: kustomize
+  name: web
+  namespace: team-a
+spec:
+  serverRef: {kind: ClusterIdentityProvider, name: keycloak}
+  redirectUris: [https://app.team-a.example.com/callback]
+  scopes: [openid, profile]
+  binding: {secretName: web-oidc}
+  rotationPolicy: {interval: 2160h, gracePeriod: 24h}

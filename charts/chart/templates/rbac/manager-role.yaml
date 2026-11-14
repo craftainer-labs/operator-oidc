@@ -8,48 +8,40 @@ metadata:
 {{- if .Values.rbac.namespaced }}
   namespace: {{ .Release.Namespace }}
 {{- end }}
-  name: {{ include "template-k8s-operator.resourceName" (dict "suffix" "manager-role" "context" $) }}
+  name: {{ include "operator-oidc.resourceName" (dict "suffix" "manager-role" "context" $) }}
 rules:
 - apiGroups:
-  - ""
+  - oidc.craftainer.dev
   resources:
-  - configmaps
+  - clusteridentityproviders
+  - identityproviders
   verbs:
-  - create
-  - delete
+  - get
+  - list
+  - watch
+- apiGroups:
+  - oidc.craftainer.dev
+  resources:
+  - clusteridentityproviders/status
+  - identityproviders/status
+  - oidcclients/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - oidc.craftainer.dev
+  resources:
+  - oidcclients
+  verbs:
   - get
   - list
   - patch
   - update
   - watch
 - apiGroups:
-  - events.k8s.io
+  - oidc.craftainer.dev
   resources:
-  - events
+  - oidcclients/finalizers
   verbs:
-  - create
-  - patch
-- apiGroups:
-  - sample.craftainer.dev
-  resources:
-  - greetings
-  verbs:
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - sample.craftainer.dev
-  resources:
-  - greetings/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - sample.craftainer.dev
-  resources:
-  - greetings/status
-  verbs:
-  - get
-  - patch
   - update

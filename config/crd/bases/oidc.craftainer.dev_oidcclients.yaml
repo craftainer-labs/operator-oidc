@@ -1,0 +1,474 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: oidcclients.oidc.craftainer.dev
+spec:
+  group: oidc.craftainer.dev
+  names:
+    categories:
+    - craftainer
+    kind: OidcClient
+    listKind: OidcClientList
+    plural: oidcclients
+    singular: oidcclient
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Synced")].status
+      name: Synced
+      type: string
+    - jsonPath: .spec.serverRef.name
+      name: Server
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          OidcClient is an OpenID Connect client registered with an identity provider,
+          its credentials written to a binding Secret.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of OidcClient
+            properties:
+              binding:
+                description: Binding configures the binding Secret.
+                properties:
+                  secretName:
+                    description: |-
+                      SecretName is the Secret's name; the default is the claim's name. It is
+                      immutable.
+                    maxLength: 253
+                    pattern: ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$
+                    type: string
+                    x-kubernetes-validations:
+                    - message: binding.secretName is immutable
+                      rule: self == oldSelf
+                type: object
+              grantTypes:
+                default:
+                - authorization_code
+                description: grantTypes are the grants the client may use.
+                items:
+                  description: GrantType is an OAuth 2.0 grant a client may use.
+                  enum:
+                  - authorization_code
+                  - refresh_token
+                  - client_credentials
+                  type: string
+                maxItems: 3
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: set
+              managementPolicies:
+                default:
+                - '*'
+                description: |-
+                  ManagementPolicies limits what the controller may do to the external
+                  object (ADR 0002, section 5). The default is ["*"].
+                items:
+                  description: |-
+                    ManagementPolicy is one value of spec.managementPolicies, with Crossplane's
+                    meanings (ADR 0002, section 5).
+                  enum:
+                  - '*'
+                  - Observe
+                  - Create
+                  - Update
+                  - Delete
+                  - LateInitialize
+                  type: string
+                maxItems: 5
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: set
+                x-kubernetes-validations:
+                - message: '''*'' must stand alone'
+                  rule: '!(''*'' in self) || self.size() == 1'
+                - message: an explicit list must contain Observe
+                  rule: self == ['*'] || 'Observe' in self
+              pkce:
+                default: S256
+                description: pkce says whether PKCE is required.
+                enum:
+                - S256
+                - Disabled
+                type: string
+              postLogoutRedirectUris:
+                description: |-
+                  postLogoutRedirectUris are the exact URIs the provider may redirect to
+                  after logout, with the same rules as redirectUris.
+                items:
+                  description: |-
+                    RedirectURI is a redirect or post-logout redirect URI. It is an exact URI,
+                    never a pattern: https, or http only for the loopback hosts localhost and
+                    127.0.0.1 (which a public client alone may use, see the OidcClientSpec rules);
+                    no wildcard, no fragment and no userinfo. The rules compare the parsed host
+                    exactly, because a prefix or regex match would accept
+                    http://localhost.evil.example. The webhook parses the URI again.
+                  maxLength: 2048
+                  minLength: 1
+                  type: string
+                  x-kubernetes-validations:
+                  - message: must contain only printable ASCII characters, without
+                      spaces or backslashes
+                    rule: self.matches('^[]-~!-[]+$')
+                  - message: must start with https://, or with http:// for localhost
+                      or 127.0.0.1
+                    rule: self.startsWith('https://') || self.startsWith('http://')
+                  - message: wildcards are not allowed
+                    rule: '!self.contains(''*'')'
+                  - message: a fragment is not allowed
+                    rule: '!self.contains(''#'')'
+                  - message: userinfo (user@host) is not allowed
+                    rule: '!self.contains(''@'')'
+                  - message: must be an absolute URL with a host
+                    rule: isURL(self) && url(self).getHostname() != ''
+                  - message: an http URI must have the host localhost or 127.0.0.1
+                      exactly
+                    rule: '!self.startsWith(''http://'') || url(self).getHostname()
+                      in [''localhost'', ''127.0.0.1'']'
+                maxItems: 20
+                type: array
+                x-kubernetes-list-type: set
+              public:
+                default: false
+                description: |-
+                  public makes the client a public one (a native or single-page app): it
+                  has no secret, so no binding Secret holds a clientSecret.
+                type: boolean
+              redirectUris:
+                description: redirectUris are the exact URIs the provider may redirect
+                  to after login.
+                items:
+                  description: |-
+                    RedirectURI is a redirect or post-logout redirect URI. It is an exact URI,
+                    never a pattern: https, or http only for the loopback hosts localhost and
+                    127.0.0.1 (which a public client alone may use, see the OidcClientSpec rules);
+                    no wildcard, no fragment and no userinfo. The rules compare the parsed host
+                    exactly, because a prefix or regex match would accept
+                    http://localhost.evil.example. The webhook parses the URI again.
+                  maxLength: 2048
+                  minLength: 1
+                  type: string
+                  x-kubernetes-validations:
+                  - message: must contain only printable ASCII characters, without
+                      spaces or backslashes
+                    rule: self.matches('^[]-~!-[]+$')
+                  - message: must start with https://, or with http:// for localhost
+                      or 127.0.0.1
+                    rule: self.startsWith('https://') || self.startsWith('http://')
+                  - message: wildcards are not allowed
+                    rule: '!self.contains(''*'')'
+                  - message: a fragment is not allowed
+                    rule: '!self.contains(''#'')'
+                  - message: userinfo (user@host) is not allowed
+                    rule: '!self.contains(''@'')'
+                  - message: must be an absolute URL with a host
+                    rule: isURL(self) && url(self).getHostname() != ''
+                  - message: an http URI must have the host localhost or 127.0.0.1
+                      exactly
+                    rule: '!self.startsWith(''http://'') || url(self).getHostname()
+                      in [''localhost'', ''127.0.0.1'']'
+                maxItems: 20
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: set
+              rotationPolicy:
+                description: RotationPolicy turns on credential rotation.
+                properties:
+                  gracePeriod:
+                    default: 1h
+                    description: |-
+                      GracePeriod is how long the previous generation stays valid. The default
+                      is 1h; minimum 5m, maximum 168h.
+                    maxLength: 32
+                    type: string
+                    x-kubernetes-validations:
+                    - message: gracePeriod must be between 5m and 168h
+                      rule: duration(self) >= duration('5m') && duration(self) <=
+                        duration('168h')
+                  interval:
+                    description: |-
+                      Interval rotates on a schedule; unset means only on the
+                      craftainer.dev/rotate annotation. Minimum 1h, maximum 8760h.
+                    maxLength: 32
+                    type: string
+                    x-kubernetes-validations:
+                    - message: interval must be between 1h and 8760h
+                      rule: duration(self) >= duration('1h') && duration(self) <=
+                        duration('8760h')
+                type: object
+              scopes:
+                default:
+                - openid
+                description: |-
+                  scopes are the scopes the client may request. Each must be one of the
+                  provider's allowedScopes (the controller checks that).
+                items:
+                  description: |-
+                    Scope is one OAuth 2.0 scope token (RFC 6749, section 3.3): printable ASCII
+                    without space, double quote and backslash.
+                  maxLength: 128
+                  minLength: 1
+                  pattern: ^[]-~!#-[]+$
+                  type: string
+                maxItems: 50
+                type: array
+                x-kubernetes-list-type: set
+              serverRef:
+                description: ServerRef selects the server. It is immutable.
+                properties:
+                  kind:
+                    description: Kind is the server kind.
+                    maxLength: 63
+                    minLength: 1
+                    type: string
+                  name:
+                    description: Name is the server's name.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+                x-kubernetes-validations:
+                - message: serverRef is immutable
+                  rule: self == oldSelf
+              tokenEndpointAuthMethod:
+                description: |-
+                  tokenEndpointAuthMethod is how the client authenticates at the token
+                  endpoint. It is "none" for a public client and "client_secret_basic"
+                  for a confidential one when unset (the operator resolves it; there is no
+                  schema default, because the default depends on public).
+                enum:
+                - client_secret_basic
+                - client_secret_post
+                - none
+                type: string
+              webOrigins:
+                description: |-
+                  webOrigins are the origins allowed to call the client's endpoints from a
+                  browser.
+                items:
+                  description: |-
+                    WebOrigin is an origin allowed to call the client's endpoints from a browser
+                    (CORS): https://host[:port], or http://localhost or http://127.0.0.1 for a
+                    public client. No path, no wildcard and no "+" (Keycloak's "all redirect
+                    origins").
+                  maxLength: 300
+                  minLength: 1
+                  type: string
+                  x-kubernetes-validations:
+                  - message: 'must be an origin: https://host[:port], or http://localhost
+                      or http://127.0.0.1 with an optional port, without a path or
+                      wildcard'
+                    rule: self.matches('^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$') ||
+                      self.matches('^http://(localhost|127[.]0[.]0[.]1)(:[0-9]{1,5})?$')
+                maxItems: 20
+                type: array
+                x-kubernetes-list-type: set
+            required:
+            - redirectUris
+            - serverRef
+            type: object
+            x-kubernetes-validations:
+            - message: serverRef.kind must be ClusterIdentityProvider or IdentityProvider
+              rule: self.serverRef.kind in ['ClusterIdentityProvider', 'IdentityProvider']
+            - message: rotationPolicy needs the Update management policy
+              rule: '!has(self.rotationPolicy) || self.managementPolicies == [''*'']
+                || ''Update'' in self.managementPolicies'
+            - message: 'rotationPolicy is allowed only on a confidential client: a
+                public client has no secret to rotate'
+              rule: '!has(self.rotationPolicy) || !self.public'
+            - message: 'the client_credentials grant needs a confidential client (public:
+                false)'
+              rule: '!self.public || !(''client_credentials'' in self.grantTypes)'
+            - message: tokenEndpointAuthMethod none is for public clients and only
+                for them
+              rule: '!has(self.tokenEndpointAuthMethod) || (self.tokenEndpointAuthMethod
+                == ''none'') == self.public'
+            - message: 'a public client must use PKCE: pkce Disabled is not allowed'
+              rule: '!self.public || self.pkce != ''Disabled'''
+            - message: 'an http loopback URI or origin is allowed only on a public
+                client (public: true); a confidential client needs https'
+              rule: self.public || (!self.redirectUris.exists(u, u.startsWith('http://'))
+                && (!has(self.postLogoutRedirectUris) || !self.postLogoutRedirectUris.exists(u,
+                u.startsWith('http://'))) && (!has(self.webOrigins) || !self.webOrigins.exists(o,
+                o.startsWith('http://'))))
+          status:
+            description: status defines the observed state of OidcClient
+            properties:
+              binding:
+                description: Binding names the binding Secret.
+                properties:
+                  name:
+                    description: |-
+                      Name is the Secret's name; its presence makes the claim a Provisioned
+                      Service.
+                    maxLength: 253
+                    type: string
+                type: object
+              conditions:
+                description: Conditions holds Ready, Synced and ServerReachable.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                maxItems: 8
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              externalId:
+                description: ExternalID is the backend-assigned id, where there is
+                  one.
+                maxLength: 255
+                type: string
+              externalName:
+                description: ExternalName is the name derived by naming.Tenant.
+                maxLength: 255
+                type: string
+              lastReconcileTime:
+                description: LastReconcileTime is when the controller last reconciled
+                  the claim.
+                format: date-time
+                type: string
+              lateInitialized:
+                additionalProperties:
+                  type: string
+                description: LateInitialized holds the values recorded under LateInitialize.
+                maxProperties: 20
+                type: object
+                x-kubernetes-validations:
+                - message: values are at most 255 characters
+                  rule: self.all(k, size(self[k]) <= 255)
+              observedGeneration:
+                description: ObservedGeneration is the metadata.generation last reconciled.
+                format: int64
+                type: integer
+              registrationClientUri:
+                description: |-
+                  registrationClientUri is the client's management URI after dynamic
+                  registration (RFC 7592). The registration access token is in a Secret in
+                  the operator namespace, never in status.
+                maxLength: 2048
+                type: string
+              rotation:
+                description: Rotation is the persisted rotation state.
+                properties:
+                  active:
+                    description: |-
+                      Active is the generation the binding Secret holds; empty before the first
+                      rotation.
+                    maxLength: 128
+                    type: string
+                  lastRotated:
+                    description: LastRotated is when the last RotateBegin completed.
+                    format: date-time
+                    type: string
+                  lastTrigger:
+                    description: |-
+                      LastTrigger is the last handled value of the craftainer.dev/rotate
+                      annotation.
+                    maxLength: 253
+                    type: string
+                  previous:
+                    description: Previous is the generation awaiting retirement.
+                    maxLength: 128
+                    type: string
+                  retireAfter:
+                    description: |-
+                      RetireAfter is the end of the grace period. A grace period is in force
+                      while it or Previous is set.
+                    format: date-time
+                    type: string
+                  sequence:
+                    description: Sequence counts completed RotateBegin calls.
+                    format: int64
+                    type: integer
+                type: object
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
