@@ -193,7 +193,7 @@ func (d *DCR) info(r *response, prev dcr.State) (Info, error) {
 	if _, err := d.manageURL(st.RegistrationClientURI); err != nil || st.ClientID == "" || st.RegistrationAccessToken == "" {
 		return Info{}, ErrBadResponse
 	}
-	out := Info{State: st, Secret: a.ClientSecret, Registration: a.metadata.registration()}
+	out := Info{State: st, Secret: a.ClientSecret, Registration: a.registration()}
 	if a.ClientSecretExpiresAt > 0 {
 		out.SecretExpiresAt = time.Unix(a.ClientSecretExpiresAt, 0)
 	}

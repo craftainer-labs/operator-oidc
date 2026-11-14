@@ -223,6 +223,7 @@ func TestKeycloakBadAnswers(t *testing.T) {
 		rules []rule
 		run   func(k *Keycloak, id string) error
 		want  error
+		code  int // when set, the HTTP status the error must carry
 	}{
 		"created without a Location": {
 			rules: []rule{{"POST", "/clients", reply{status: 201}}},
@@ -252,7 +253,7 @@ func TestKeycloakBadAnswers(t *testing.T) {
 		"a rotated secret that cannot be read": {
 			rules: []rule{{"GET", "/client-secret/rotated", reply{status: 500}}},
 			run:   func(k *Keycloak, id string) error { _, err := k.Rotate(ctx, id, ""); return err },
-			want:  &Error{Status: 500},
+			code:  500,
 		},
 		"a client that is not an object": {
 			rules: []rule{{"GET", "/clients/id-1", reply{status: 200, body: `[1]`}}},
@@ -262,7 +263,7 @@ func TestKeycloakBadAnswers(t *testing.T) {
 		"a refused delete": {
 			rules: []rule{{"DELETE", "/clients/id-1", reply{status: 500, body: "internal https://10.0.0.1/secret"}}},
 			run:   func(k *Keycloak, id string) error { return k.Delete(ctx, id) },
-			want:  &Error{Status: 500},
+			code:  500,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -271,10 +272,9 @@ func TestKeycloakBadAnswers(t *testing.T) {
 			id := f.seed(s.ClientID, s.Marker)
 			f.rules = tc.rules
 			err := tc.run(newKeycloakFor(t, f), id)
-			var e *Error
-			if want, ok := tc.want.(*Error); ok {
-				if !errors.As(err, &e) || e.Status != want.Status {
-					t.Fatalf("%v, want status %d", err, want.Status)
+			if tc.code != 0 {
+				if statusOf(err) != tc.code {
+					t.Fatalf("%v, want status %d", err, tc.code)
 				}
 			} else if !errors.Is(err, tc.want) {
 				t.Fatalf("%v, want %v", err, tc.want)

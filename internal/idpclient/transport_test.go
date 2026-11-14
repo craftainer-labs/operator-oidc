@@ -52,7 +52,7 @@ func TestTransportCategories(t *testing.T) {
 	plain := httptest.NewServer(ok)
 	t.Cleanup(plain.Close)
 	oldTLS := httptest.NewUnstartedServer(ok)
-	oldTLS.TLS = &tls.Config{MinVersion: tls.VersionTLS12, MaxVersion: tls.VersionTLS12}
+	oldTLS.TLS = &tls.Config{MinVersion: tls.VersionTLS12, MaxVersion: tls.VersionTLS12} //nolint:gosec // a server limited to TLS 1.2 on purpose
 	oldTLS.StartTLS()
 	t.Cleanup(oldTLS.Close)
 

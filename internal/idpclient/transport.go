@@ -273,6 +273,11 @@ func parseHTTPS(raw string) (*url.URL, error) {
 		u.ForceQuery || u.Fragment != "" {
 		return nil, ErrInvalidEndpoint
 	}
+	if u.Path == "" {
+		// JoinPath of an empty path is relative, and a request line needs the
+		// leading slash.
+		u.Path = "/"
+	}
 	return u, nil
 }
 

@@ -1,6 +1,7 @@
 package idpclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"encoding/pem"
@@ -88,6 +89,7 @@ func (r *recorder) forced(req *http.Request) (reply, bool) {
 		r.bodies, r.auth = map[string][]byte{}, map[string]string{}
 	}
 	b, _ := io.ReadAll(req.Body)
+	req.Body = io.NopCloser(bytes.NewReader(b))
 	r.bodies[key], r.auth[key] = b, req.Header.Get("Authorization")
 	if r.failAt == r.n {
 		return r.failWith, true
