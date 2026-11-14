@@ -229,12 +229,12 @@ func TestOidcClientValidator(t *testing.T) {
 
 	// So is one that lists authorization_code beside other grants, but a
 	// client_credentials-only client needs none.
-	c := oidcClient(false)
-	c.Spec.GrantTypes = []oidcv1alpha1.GrantType{oidcv1alpha1.GrantRefreshToken, oidcv1alpha1.GrantAuthorizationCode}
-	_, err = v.ValidateCreate(ctx, c)
+	grants := oidcClient(false)
+	grants.Spec.GrantTypes = []oidcv1alpha1.GrantType{oidcv1alpha1.GrantRefreshToken, oidcv1alpha1.GrantAuthorizationCode}
+	_, err = v.ValidateCreate(ctx, grants)
 	expectField(g, err, "spec.redirectUris", "at least one redirect URI is required")
-	c.Spec.GrantTypes = []oidcv1alpha1.GrantType{oidcv1alpha1.GrantClientCredentials}
-	_, err = v.ValidateCreate(ctx, c)
+	grants.Spec.GrantTypes = []oidcv1alpha1.GrantType{oidcv1alpha1.GrantClientCredentials}
+	_, err = v.ValidateCreate(ctx, grants)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// The post-logout URIs and the web origins follow the same rules.
