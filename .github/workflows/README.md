@@ -10,6 +10,14 @@
   kubectl, kind, helm and chainsaw (`scripts/develop.d/20-k8s-tools.sh`) on the
   runner and runs `scripts/e2e.sh` (kind cluster, cert-manager, Chainsaw). The
   same script runs locally.
+- `integration.yml` — instance-owned (listed in `../template-sync-manifest.local.yml`):
+  on push, pull requests and on demand, starts a real Keycloak (the dev stack's
+  version, pinned by digest) with TLS (a CA and server certificate generated in
+  the job) and the preview feature `client-secret-rotation`, from
+  `../../test/integration`'s files, and runs its Go tests (build tag
+  `integration`) with verified connections, after linting that package with
+  `golangci-lint --build-tags integration`. A step-started container, not a
+  `services:` one, because the certificates come from the checkout.
 - `release-extras.yml` — manually dispatched with a `tag` input, right after
   each `Release`: `gh workflow run release-extras.yml -f tag=vX.Y.Z`. Publishes
   the Helm chart (OCI), the OLM bundle image and the file-based catalog image
