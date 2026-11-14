@@ -186,13 +186,15 @@ func (s ClientSpec) owned() map[string]any {
 	}
 }
 
-// attributes are the attributes this client sets. The PKCE attribute is absent
-// when PKCE is disabled.
+// attributes are the attributes this client sets. The PKCE attribute is empty
+// when PKCE is disabled: Keycloak drops an empty attribute, and keeps one a PUT
+// leaves out.
 func (s ClientSpec) attributes() map[string]string {
 	a := map[string]string{
 		markerAttr:     s.Marker,
 		postLogoutAttr: postLogoutValue(s.PostLogoutRedirectURIs),
 		refreshAttr:    strconv.FormatBool(slices.Contains(s.grants(), grantRefreshToken)),
+		pkceAttr:       "",
 	}
 	if s.PKCE != pkceDisabled {
 		a[pkceAttr] = pkceS256
@@ -213,7 +215,6 @@ func (s ClientSpec) body(raw map[string]any) []byte {
 	if cur, ok := raw["attributes"].(map[string]any); ok {
 		maps.Copy(attrs, cur)
 	}
-	delete(attrs, pkceAttr)
 	for k, v := range s.attributes() {
 		attrs[k] = v
 	}

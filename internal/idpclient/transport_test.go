@@ -47,6 +47,7 @@ func TestTransportCategories(t *testing.T) {
 		select {
 		case <-r.Context().Done():
 		case <-block:
+		case <-time.After(3 * time.Second):
 		}
 	})
 	plain := httptest.NewServer(ok)

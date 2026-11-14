@@ -96,8 +96,8 @@ func TestKeycloakLifecycle(t *testing.T) {
 	if c, err = k.Get(ctx, c.ID, s.Marker); err != nil || !c.Matches(s2) || c.Matches(s) {
 		t.Fatalf("not converged: %v %+v", err, c.rep)
 	}
-	if _, ok := f.client(c.ID).rep["attributes"].(map[string]any)[pkceAttr]; ok {
-		t.Fatal("the PKCE attribute stayed")
+	if got := f.client(c.ID).rep["attributes"].(map[string]any)[pkceAttr]; got != "" {
+		t.Fatalf("the PKCE attribute is %v, want it emptied", got)
 	}
 	if got := scopeNamesOf(c); !slices.Equal(got, []string{"basic", "email"}) {
 		t.Fatalf("scopes %v", got)
@@ -191,9 +191,10 @@ func TestKeycloakRefusals(t *testing.T) {
 		t.Error("the foreign client was changed by Update")
 	}
 
+	posts := f.saw("POST " + kcAdmin + "/clients")
 	_, err = k.Create(ctx, ClientSpec{ClientID: "x", Marker: "m", Scopes: []string{"nope"}})
 	check("unknown scope", err, ErrUnknownScope)
-	if f.saw("POST "+kcAdmin+"/clients") != 0 {
+	if f.saw("POST "+kcAdmin+"/clients") != posts {
 		t.Error("a client was created although a scope is unknown")
 	}
 	check("update with an unknown scope", k.Update(ctx, mine, ClientSpec{ClientID: "x", Marker: s.Marker, Scopes: []string{"nope"}}), ErrUnknownScope)
