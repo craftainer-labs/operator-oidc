@@ -545,7 +545,7 @@ func TestOwnershipAndDeletion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _, _ = admin(http.MethodDelete, "/"+realm+"/clients/"+id, nil) })
+	t.Cleanup(func() { _, _, _, _ = admin(http.MethodDelete, "/"+realm+"/clients/"+id, nil) })
 	if _, err := k.Create(ctx, other); !errors.Is(err, idpclient.ErrNameCollision) {
 		t.Fatalf("create over a client that is not ours: %v", err)
 	}
