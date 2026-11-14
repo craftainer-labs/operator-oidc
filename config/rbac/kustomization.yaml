@@ -20,8 +20,14 @@ resources:
 - metrics_reader_role.yaml
 # For each CRD, "Admin", "Editor" and "Viewer" roles are scaffolded by
 # default, aiding admins in cluster management. Those roles are
-# not used by the template-k8s-operator itself. You can comment the following lines
+# not used by the operator-oidc itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
-- greeting_admin_role.yaml
-- greeting_editor_role.yaml
-- greeting_viewer_role.yaml
+- clusteridentityprovider_admin_role.yaml
+- clusteridentityprovider_editor_role.yaml
+- clusteridentityprovider_viewer_role.yaml
+- identityprovider_admin_role.yaml
+- identityprovider_editor_role.yaml
+- identityprovider_viewer_role.yaml
+- oidcclient_admin_role.yaml
+- oidcclient_editor_role.yaml
+- oidcclient_viewer_role.yaml

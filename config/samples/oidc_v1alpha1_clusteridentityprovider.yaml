@@ -1,0 +1,16 @@
+apiVersion: oidc.craftainer.dev/v1alpha1
+kind: ClusterIdentityProvider
+metadata:
+  labels:
+    app.kubernetes.io/name: operator-oidc
+    app.kubernetes.io/managed-by: kustomize
+  name: keycloak
+spec:
+  type: Keycloak
+  issuer: https://sso.example.com/realms/craftainer
+  keycloak: {baseURL: https://sso.example.com, realm: craftainer}
+  adminCredentialsSecretRef: {name: kc-operator, namespace: craftainer-system}
+  allowedNamespaces:
+    from: Selector
+    selector:
+      matchLabels: {craftainer.dev/oidc: allowed}

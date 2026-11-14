@@ -1,0 +1,15 @@
+apiVersion: oidc.craftainer.dev/v1alpha1
+kind: IdentityProvider
+metadata:
+  labels:
+    app.kubernetes.io/name: operator-oidc
+    app.kubernetes.io/managed-by: kustomize
+  name: team-idp
+  namespace: team-a
+spec:
+  type: DynamicRegistration
+  issuer: https://idp.team-a.example.com
+  dynamicRegistration:
+    registrationEndpoint: https://idp.team-a.example.com/register
+    initialAccessTokenSecretRef: {name: team-idp-iat, key: token}
+  adminCredentialsSecretRef: {name: team-idp-iat}

@@ -1,35 +1,76 @@
-# template-k8s-operator
+# operator-oidc
 
 > [!NOTE]
 > This repository is vibe coded with [Claude](https://claude.com/product/claude-code).
 
-A template for Kubernetes operators written in Go on
-[kubebuilder](https://book.kubebuilder.io/) v4: an instance of
-[`template-docker`](https://github.com/craftainer/template-docker) (and so of
-[`template-base`](https://github.com/craftainer/template-base)) that is itself
-a template. Create an operator from it and get:
+A Kubernetes operator that registers OpenID Connect clients on
+[Keycloak](https://www.keycloak.org/) and on any identity provider that
+supports dynamic client registration ([RFC 7591](https://www.rfc-editor.org/rfc/rfc7591)
+and [RFC 7592](https://www.rfc-editor.org/rfc/rfc7592)). A team claims a client
+with an `OidcClient`; the operator creates it on the provider and writes its
+client id and secret to a binding Secret. It is built on
+[`lib-operator-go`](https://github.com/craftainer-labs/lib-operator-go) and
+kubebuilder v4, from the `template-k8s-operator` template. This repository
+holds the API (types, CRDs, admission webhooks); the controller follows.
 
-- the kubebuilder v4 layout and a sample API (`Greeting`, group
-  `sample.craftainer.dev`) that follows the family's CRD conventions;
-- a manager with leader election, authenticated HTTPS metrics, probes and
-  cert-manager-issued webhook certificates;
-- unit tests, envtest suites and a kind + [Chainsaw](https://kyverno.github.io/chainsaw/)
-  end-to-end test, behind a 100% coverage gate on hand-written code;
-- a Helm chart ([kubebuilder `helm/v2-alpha`](https://book.kubebuilder.io/plugins/available/helm-v2-alpha)),
-  published as OCI;
-- an OLM bundle and file-based catalog ([operator-sdk](https://sdk.operatorframework.io/),
-  installable with OLM v0 and OLM v1's `ClusterExtension`);
-- a distroless static `nonroot` image that runs under an arbitrary UID;
-- the Go tooling of `template-go-module` (pinned, checksummed toolchain,
-  golangci-lint v2, govulncheck) and signed, attested releases.
+## Custom resources
 
-See [`docs/TEMPLATE.md`](docs/TEMPLATE.md) for how it works and what an
-instance changes, and [`docs/adrs/`](docs/adrs/) for why
-([0002](docs/adrs/0002-kubernetes-operator-template.md) the template's design,
-[0003](docs/adrs/0003-release-extras-and-supply-chain.md) release extras and
-the supply chain).
+All three are in the API group `oidc.craftainer.dev/v1alpha1`. Samples are in
+[`config/samples/`](config/samples/).
 
-## Quick start
+| Kind | Scope | What it is |
+| --- | --- | --- |
+| `ClusterIdentityProvider` | cluster | An identity provider many namespaces may claim clients from. `allowedNamespaces` is required (it fails closed) and `adminCredentialsSecretRef.namespace` is required. |
+| `IdentityProvider` | namespaced | An identity provider only claims in its own namespace may use. Its admin Secret is in the same namespace. |
+| `OidcClient` | namespaced | An OpenID Connect client on a provider (`serverRef`), with redirect URIs, grant types, scopes and a client type. Its credentials are written to a binding Secret. |
+
+Both provider kinds set a `type` (immutable) and the block that matches it:
+
+- `Keycloak`: `keycloak.baseURL` and `keycloak.realm`. The admin Secret holds
+  the keys `clientId` and `clientSecret` of a service account that may manage
+  clients in the realm.
+- `DynamicRegistration`: `dynamicRegistration.registrationEndpoint` and an
+  optional `initialAccessTokenSecretRef`.
+
+They also set `issuer`, `allowedScopes`, and optionally `tls` (CA bundle, server
+name, minimum version), `proxyURL` and `healthCheckInterval`. Every URL must be
+an https URL with a host, without userinfo, query or fragment, and a proxy URL
+carries no credentials.
+
+An `OidcClient` is confidential by default (it gets a secret, and may rotate it
+with `rotationPolicy`) or `public: true` (no secret, PKCE required, no
+`client_credentials` grant). Its `redirectUris`, `postLogoutRedirectUris` and
+`webOrigins` are exact values, validated when the object is admitted:
+
+- `https` only. `http` is allowed for the hosts `localhost` and `127.0.0.1`
+  (compared exactly, so `http://localhost.evil.example` is refused), and only on
+  a public client, as [RFC 8252](https://www.rfc-editor.org/rfc/rfc8252)
+  describes for native apps. `[::1]` is not allowed.
+- No wildcard, no fragment and no userinfo (an `@` anywhere), no backslash,
+  space or non-ASCII character. `javascript:`, `data:` and custom schemes are
+  not `https` URLs, so they are refused.
+- A web origin is a scheme, a host and an optional port, with no path.
+
+The CRD's CEL rules check these, and the validating webhooks parse every URI
+again (`RedirectURIProblem` and `WebOriginProblem` in `internal/webhook/v1alpha1`,
+which the controller reuses). Admission errors never echo a URL.
+
+## Install
+
+The operator needs a Kubernetes cluster at 1.33 or newer and
+[cert-manager](https://cert-manager.io/) for its webhook certificates. A release
+publishes three artifacts to the OCI registry (see "Releases" below):
+
+- a Helm chart, `helm install operator-oidc oci://<registry>/<path>/operator-oidc --version X.Y.Z -n operator-oidc-system --create-namespace`;
+- an OLM bundle and a file-based catalog, installable with OLM v0 and OLM v1's
+  `ClusterExtension`;
+- the distroless `nonroot` image the chart and bundle run.
+
+The registry and path come from the repository's `OCI_REGISTRY` variable and
+the release workflow. From a checkout, `make deploy` installs the kustomize
+manifests of `config/default`.
+
+## Development
 
 Open the repository in its devcontainer (the Go and Kubernetes tools are
 installed there), then:
@@ -42,6 +83,8 @@ make bundle-validate   # OLM bundle (operator-sdk) and catalog (opm)
 make operator-help # every operator target
 prek run --all-files --hook-stage manual   # all checks
 ```
+
+## Releases
 
 Releases go through `release.yml` as in `template-docker`; right after each
 one, dispatch `release-extras.yml` to publish the chart, bundle and catalog
@@ -59,23 +102,6 @@ attested, and missing ones are published and attested. SLSA provenance must
 describe the run that built the artifact, so a resumed run does not claim it:
 an existing artifact without provenance is named in a warning, and if
 provenance is required for it, cut a new patch version instead.
-
-## Creating an operator from this template
-
-1. Create the repository from this template, then set
-   `.github/template-sync-state.json` to `craftainer/template-docker` at the
-   tag the template was created at (a repository created from a template
-   starts with its parent's state file).
-2. Rename: the Go module in `go.mod` and every import, `OPERATOR_NAME`,
-   `LeaderElectionID` and `EventRecorderName` in `internal/app`, the chart
-   (`charts/chart/Chart.yaml`, `values.yaml`: `manager.image.repository`), the
-   CSV base file and its name in `config/manifests`, `namePrefix` and
-   `namespace` in the kustomizations, and the labels in `config/`.
-3. Replace the sample API: `kubebuilder create api` / `create webhook` for your
-   kinds, delete `Greeting`, run `make manifests generate`, update the chart
-   (see `docs/TEMPLATE.md`, "Helm chart") and `test/e2e/operator`.
-4. Set the repository variable `OCI_REGISTRY=ghcr.io` (the image release and
-   `release-extras.yml` both use it).
 
 ## License
 

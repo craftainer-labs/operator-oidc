@@ -5,32 +5,45 @@ metadata:
     alm-examples: '[]'
     capabilities: Basic Install
     categories: Developer Tools
-    description: A Kubernetes operator built from craftainer/template-k8s-operator.
+    description: A Kubernetes operator that provisions OIDC clients on Keycloak and other OpenID Connect identity providers (oidc.craftainer.dev).
     # Pod Security `restricted` and a suggested install namespace for OLM v0
     # (OLM v1 installs into the ClusterExtension's namespace).
-    operatorframework.io/suggested-namespace: template-k8s-operator-system
+    operatorframework.io/suggested-namespace: operator-oidc-system
     # OpenShift infrastructure features (EB-5): "disconnected" is true when
     # every image the operator runs is listed in spec.relatedImages (the
     # bundle step pins and lists the manager image). Add "proxy-aware" once
     # the operator honours HTTP(S)_PROXY/NO_PROXY, and "fips-compliant" for a
     # build with GOFIPS140 (see the Dockerfile) run with GODEBUG=fips140=on.
     operators.openshift.io/infrastructure-features: '["disconnected"]'
-    repository: https://github.com/craftainer/template-k8s-operator
-  name: template-k8s-operator.v0.0.0
+    repository: https://github.com/craftainer-labs/operator-oidc
+  name: operator-oidc.v0.0.0
   namespace: placeholder
 spec:
   apiservicedefinitions: {}
   customresourcedefinitions:
     owned:
-    - description: Greeting is the Schema for the greetings API.
-      displayName: Greeting
-      kind: Greeting
-      name: greetings.sample.craftainer.dev
+    - description: ClusterIdentityProvider is a cluster-scoped Keycloak or dynamic-registration identity provider that the namespaces in allowedNamespaces may claim clients from.
+      displayName: Cluster Identity Provider
+      kind: ClusterIdentityProvider
+      name: clusteridentityproviders.oidc.craftainer.dev
+      version: v1alpha1
+    - description: IdentityProvider is a Keycloak or dynamic-registration identity provider that only claims in its own namespace may use.
+      displayName: Identity Provider
+      kind: IdentityProvider
+      name: identityproviders.oidc.craftainer.dev
+      version: v1alpha1
+    - description: OidcClient is an OpenID Connect client registered with an identity provider, its credentials written to a binding Secret.
+      displayName: OIDC Client
+      kind: OidcClient
+      name: oidcclients.oidc.craftainer.dev
       version: v1alpha1
   description: |-
-    A sample operator. Instances replace this text with what the operator does,
-    how to configure it and what it needs from the cluster.
-  displayName: Template K8s Operator
+    Provisions OIDC clients from Kubernetes resources. A
+    ClusterIdentityProvider or IdentityProvider names the identity provider
+    (Keycloak, or any provider with RFC 7591 dynamic client registration) and
+    its credentials; an OidcClient in a team's namespace claims a client from
+    it, with the client id and secret written to a binding Secret.
+  displayName: OIDC Operator
   install:
     spec:
       deployments: null
@@ -51,7 +64,7 @@ spec:
   - craftainer
   links:
   - name: Source
-    url: https://github.com/craftainer/template-k8s-operator
+    url: https://github.com/craftainer-labs/operator-oidc
   maintainers:
   - email: maintainers@example.com
     name: Maintainers

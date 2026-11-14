@@ -4,28 +4,68 @@ kind: ValidatingWebhookConfiguration
 metadata:
   annotations:
     {{- if .Values.certManager.enabled }}
-    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "template-k8s-operator.resourceName" (dict "suffix" "serving-cert" "context" $) }}
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "operator-oidc.resourceName" (dict "suffix" "serving-cert" "context" $) }}
     {{- end }}
-  name: {{ include "template-k8s-operator.resourceName" (dict "suffix" "validating-webhook-configuration" "context" $) }}
+  name: {{ include "operator-oidc.resourceName" (dict "suffix" "validating-webhook-configuration" "context" $) }}
 webhooks:
 - admissionReviewVersions:
   - v1
   clientConfig:
     service:
-      name: {{ include "template-k8s-operator.resourceName" (dict "suffix" "webhook-service" "context" $) }}
+      name: {{ include "operator-oidc.resourceName" (dict "suffix" "webhook-service" "context" $) }}
       namespace: {{ .Release.Namespace }}
-      path: /validate-sample-craftainer-dev-v1alpha1-greeting
+      path: /validate-oidc-craftainer-dev-v1alpha1-clusteridentityprovider
   failurePolicy: Fail
-  name: vgreeting-v1alpha1.kb.io
+  name: vclusteridentityprovider-v1alpha1.kb.io
   rules:
   - apiGroups:
-    - sample.craftainer.dev
+    - oidc.craftainer.dev
     apiVersions:
     - v1alpha1
     operations:
     - CREATE
     - UPDATE
     resources:
-    - greetings
+    - clusteridentityproviders
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: {{ include "operator-oidc.resourceName" (dict "suffix" "webhook-service" "context" $) }}
+      namespace: {{ .Release.Namespace }}
+      path: /validate-oidc-craftainer-dev-v1alpha1-identityprovider
+  failurePolicy: Fail
+  name: videntityprovider-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - oidc.craftainer.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - identityproviders
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: {{ include "operator-oidc.resourceName" (dict "suffix" "webhook-service" "context" $) }}
+      namespace: {{ .Release.Namespace }}
+      path: /validate-oidc-craftainer-dev-v1alpha1-oidcclient
+  failurePolicy: Fail
+  name: voidcclient-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - oidc.craftainer.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - oidcclients
   sideEffects: None
 {{- end }}

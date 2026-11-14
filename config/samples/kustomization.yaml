@@ -1,4 +1,6 @@
 ## Append samples of your project ##
 resources:
-- sample_v1alpha1_greeting.yaml
+- oidc_v1alpha1_clusteridentityprovider.yaml
+- oidc_v1alpha1_identityprovider.yaml
+- oidc_v1alpha1_oidcclient.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples
