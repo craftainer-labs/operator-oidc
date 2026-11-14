@@ -187,3 +187,26 @@ func TestSets(t *testing.T) {
 		t.Fatal("nonNil")
 	}
 }
+
+// TestTransportFailureOfALaterRequest covers a provider that goes away after
+// the admin token was cached, and a registration endpoint that is gone.
+func TestTransportFailureOfALaterRequest(t *testing.T) {
+	k, srv := probeOf(t, newFakeKeycloak(), nil)
+	if err := k.Probe(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	srv.Close()
+	if err := k.Probe(t.Context()); !errors.Is(err, ErrConnFailed) {
+		t.Fatalf("%v", err)
+	}
+
+	dsrv, tr := startTLS(t, newFakeDCR())
+	d, err := NewDCR(DCRTarget{Transport: tr, RegistrationEndpoint: dsrv.URL + "/register"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dsrv.Close()
+	if _, err := d.Register(t.Context(), regSpec()); !errors.Is(err, ErrConnFailed) {
+		t.Fatalf("%v", err)
+	}
+}
