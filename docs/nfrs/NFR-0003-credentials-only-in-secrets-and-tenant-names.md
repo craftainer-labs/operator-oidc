@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented (the clients and the provider controllers; the `OidcClient` controller follows in NO6b-2b)
+Implemented (the clients, the provider controllers and the `OidcClient` controller; see also [NFR-0004](NFR-0004-an-oidc-client-is-exactly-its-spec-and-never-leaks.md))
 
 ## Attribute
 

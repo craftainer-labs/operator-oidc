@@ -15,8 +15,8 @@ holds the API (types, CRDs, admission webhooks) and the backend clients
 (`internal/idpclient`: the Keycloak Admin REST client and the RFC 7591/7592
 dynamic client registration client, over lib-operator-go's egress policy, tested
 against a real Keycloak by the `Integration` workflow) and the provider
-controllers (health probe and discovery, below); the `OidcClient` controller
-follows.
+controllers (health probe and discovery, below) and the `OidcClient` controller
+("Clients", below).
 
 ## Custom resources
 
@@ -96,6 +96,45 @@ Secret or ConfigMap is seen at the next probe interval, not at once.
 The operator keeps one client per provider between reconciles (a Keycloak admin
 token and its connections), replaced when the provider, its credentials, its CA
 bundle or its proxy change, and closed after 10 idle minutes.
+
+## Clients
+
+An `OidcClient` is reconciled with lib-operator-go's `lifecycle.Reconcile`
+(finalizer, observe, create, update, drift poll, rotation) on both kinds of
+provider. The client's credentials go to the binding Secret (`servicebinding.io/oidc`:
+`issuer`, `clientId`, `clientSecret` for a confidential client, and the provider's
+`tokenEndpoint`, `authorizationEndpoint`, `jwksUri` and `userinfoEndpoint` once
+a probe found them); never to a status, an Event or a log.
+
+- **Keycloak.** `status.externalName` is the client_id (derived once from the
+  namespace and name) and `status.externalId` is Keycloak's own id. The client
+  carries the claim's ownership marker as an attribute: a client of that name
+  that carries it is adopted, one that does not is a `NameCollision`. `scopes`
+  are exact: the client has these default client scopes and Keycloak's `basic`,
+  and the realm's defaults (`roles`, `web-origins`, `profile`, `email`) are
+  removed unless listed. The client is updated only when it differs from the
+  spec. A rotation (`rotationPolicy`, or the `craftainer.dev/rotate` annotation)
+  issues a new secret and, when the realm has a client policy with the
+  secret-rotation executor, keeps the previous one valid for the grace period;
+  without one it is a hard cut.
+- **Dynamic registration.** The client is registered once (RFC 7591).
+  `status.externalId` is the `client_id` the provider assigned, and
+  `status.registrationClientUri` its management URI. The registration (client id,
+  management URI and the registration access token) is a Secret named
+  `dcr-<claim uid>` in the operator namespace, written again after every call,
+  and the token is sent only to the registration endpoint's own origin. The
+  client is read and updated with RFC 7592; a registration the provider no longer
+  honours is `Synced=False` and is never registered again by the operator, since
+  that would change the client_id its workload was given. A rotation registers a
+  new client (the client_id changes) and deletes the old one, with no overlap.
+  A claim whose `managementPolicies` lacks `Delete` keeps the Secret, labelled
+  `craftainer.dev/orphaned=true`. A provider that answers a registration with a
+  document the operator cannot use may have made a client it cannot manage: the
+  claim gets the condition `RegistrationUnconfirmed` and a Warning Event.
+- **Checked twice.** The controller checks the redirect URIs, post-logout redirect
+  URIs, web origins and scopes (against `allowedScopes`) again, as the webhook
+  does, and refuses a claim that broke them with a fixed text before it contacts
+  the provider.
 
 ## Settings
 

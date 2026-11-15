@@ -302,7 +302,8 @@ type setupStep struct {
 // +kubebuilder:rbac:groups=oidc.craftainer.dev,resources=oidcclients/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch
-// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core;events.k8s.io,resources=events,verbs=create;patch
 
 // providerCacheIdle is how long a provider's client is kept without a use.
 const providerCacheIdle = 10 * time.Minute
@@ -326,10 +327,12 @@ func setup(mgr ctrl.Manager, webhooks bool, cs controllerSettings) error {
 	}
 	conns := controller.NewProviderCache(providerCacheIdle)
 	cfg := controller.Config{
-		Client: mgr.GetClient(), OperatorNamespace: cs.namespace, Egress: cs.egress, Cache: conns,
+		Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), Recorder: mgr.GetEventRecorder(EventRecorderName),
+		ManagedBy: EventRecorderName, OperatorNamespace: cs.namespace, Egress: cs.egress, Cache: conns,
 	}
 	steps = append(steps,
 		setupStep{"provider connection sweeper", func(mgr ctrl.Manager) error { return mgr.Add(conns) }},
+		setupStep{"OidcClient controller", (&controller.ClientReconciler{Config: cfg}).SetupWithManager},
 		setupStep{"ClusterIdentityProvider probe", providerProbe(mgr, cfg,
 			func() probe.Server { return &oidcv1alpha1.ClusterIdentityProvider{} })},
 		setupStep{"IdentityProvider probe", providerProbe(mgr, cfg,

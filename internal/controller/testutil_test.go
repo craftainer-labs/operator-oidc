@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 
@@ -55,10 +56,12 @@ func fakeClientWith(t *testing.T, funcs interceptor.Funcs, objs ...client.Object
 	m := meta.NewDefaultRESTMapper(nil)
 	m.Add(oidcv1alpha1.GroupVersion.WithKind("ClusterIdentityProvider"), meta.RESTScopeRoot)
 	m.Add(oidcv1alpha1.GroupVersion.WithKind("IdentityProvider"), meta.RESTScopeNamespace)
+	m.Add(oidcv1alpha1.GroupVersion.WithKind("OidcClient"), meta.RESTScopeNamespace)
 	m.Add(corev1.SchemeGroupVersion.WithKind("Secret"), meta.RESTScopeNamespace)
 	m.Add(corev1.SchemeGroupVersion.WithKind("ConfigMap"), meta.RESTScopeNamespace)
 	m.Add(corev1.SchemeGroupVersion.WithKind("Namespace"), meta.RESTScopeRoot)
-	return fake.NewClientBuilder().WithScheme(testScheme(t)).WithRESTMapper(m).WithObjects(objs...).WithInterceptorFuncs(funcs).Build()
+	return fake.NewClientBuilder().WithScheme(testScheme(t)).WithRESTMapper(m).WithObjects(objs...).WithStatusSubresource(&oidcv1alpha1.OidcClient{}).
+		WithIndex(&oidcv1alpha1.OidcClient{}, serverRefIndex, indexServerRef).WithInterceptorFuncs(funcs).Build()
 }
 
 // direct dials without the egress policy: the fakes listen on loopback, which
@@ -79,6 +82,8 @@ type idp struct {
 	tokenStatus int
 	mu          sync.Mutex
 	tokens      int
+	// kc is the realm's Admin REST state (clients, scopes, secrets).
+	kc kcState
 }
 
 func (f *idp) issuer() string { return f.srv.URL + "/realms/main" }
@@ -103,8 +108,8 @@ func startIDP(t *testing.T) *idp {
 				return
 			}
 			_, _ = io.WriteString(w, `{"access_token":"t","expires_in":300}`)
-		case r.Method == http.MethodGet && r.URL.Path == "/admin/realms/main/clients":
-			_, _ = io.WriteString(w, `[]`)
+		case strings.HasPrefix(r.URL.Path, "/admin/realms/main/"):
+			f.kc.serve(w, r, f.srv.URL)
 		case r.URL.Path == "/realms/main/.well-known/openid-configuration":
 			b, _ := json.Marshal(map[string]string{
 				"issuer": f.issuer(), "token_endpoint": f.issuer() + "/protocol/openid-connect/token",
