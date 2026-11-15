@@ -61,6 +61,10 @@ func isStatus(err error) bool {
 // credentials are not usable.
 const invalidProvider = "the provider's configuration or credentials are not usable"
 
+// egressRefused is the text of every way the egress policy, or a proxy it
+// checks, refuses a connection.
+const egressRefused = "the connection to the provider was refused by the egress policy"
+
 // rules are tried in order.
 var rules = []rule{
 	{is(ErrAdminCredentials), ""},
@@ -70,8 +74,8 @@ var rules = []rule{
 	{is(server.ErrAdminSecretNamespaceForbidden), "the provider's admin credentials are not usable"},
 	// The egress rules come before ErrInvalidServer: a proxy the policy refuses
 	// reaches here wrapped in it, and the more specific text is the true one.
-	{is(egress.ErrProxy), "the connection to the provider was refused by the egress policy"},
-	{is(egress.ErrProxyUserinfo), "the connection to the provider was refused by the egress policy"},
+	{is(egress.ErrProxy), egressRefused},
+	{is(egress.ErrProxyUserinfo), egressRefused},
 	{is(server.ErrInvalidServer), invalidProvider},
 	{is(server.ErrOperatorNamespaceUnset), invalidProvider},
 	{is(server.ErrUnknownServerKind), invalidProvider},
@@ -80,7 +84,7 @@ var rules = []rule{
 	{is(idpclient.ErrInvalidCA), invalidProvider},
 	{is(idpclient.ErrNoCredentials), invalidProvider},
 	{is(idpclient.ErrNoDialer), invalidProvider},
-	{is(idpclient.ErrConnPolicy), "the connection to the provider was refused by the egress policy"},
+	{is(idpclient.ErrConnPolicy), egressRefused},
 	{is(idpclient.ErrConnTLS), "the TLS handshake with the provider failed"},
 	{is(idpclient.ErrConnAuth), "the provider refused the operator's credentials"},
 	{is(idpclient.ErrConnTimeout), "the provider did not answer in time"},
