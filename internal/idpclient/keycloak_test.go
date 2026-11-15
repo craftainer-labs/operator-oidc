@@ -474,6 +474,7 @@ func TestClientMatches(t *testing.T) {
 		t.Fatal("the base case does not match")
 	}
 	for name, edit := range map[string]func(*Client){
+		"renamed":          func(c *Client) { c.rep.ClientID = "other" },
 		"disabled":         func(c *Client) { c.rep.Enabled = false },
 		"bearer only":      func(c *Client) { c.rep.BearerOnly = true },
 		"implicit flow":    func(c *Client) { c.rep.ImplicitFlowEnabled = true },

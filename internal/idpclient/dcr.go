@@ -111,14 +111,15 @@ func (m metadata) registration() Registration {
 // Satisfies reports whether what the provider holds (r, as read back) is what
 // want asks for. A provider fills in defaults, drops what it does not support
 // and may leave a field out of its answer, so a field r does not carry is not
-// compared.
+// compared, and neither is a grant type, an authentication method or a scope
+// list that want leaves empty (the provider's default stands).
 func (r Registration) Satisfies(want Registration) bool {
 	return (r.ClientName == "" || r.ClientName == want.ClientName) &&
-		(r.TokenEndpointAuthMethod == "" || r.TokenEndpointAuthMethod == want.TokenEndpointAuthMethod) &&
+		(r.TokenEndpointAuthMethod == "" || want.TokenEndpointAuthMethod == "" || r.TokenEndpointAuthMethod == want.TokenEndpointAuthMethod) &&
 		(len(r.RedirectURIs) == 0 || sameSet(r.RedirectURIs, want.RedirectURIs)) &&
 		(len(r.PostLogoutRedirectURIs) == 0 || sameSet(r.PostLogoutRedirectURIs, want.PostLogoutRedirectURIs)) &&
-		(len(r.GrantTypes) == 0 || sameSet(r.GrantTypes, want.GrantTypes)) &&
-		(len(r.Scopes) == 0 || sameSet(r.Scopes, want.Scopes))
+		(len(r.GrantTypes) == 0 || len(want.GrantTypes) == 0 || sameSet(r.GrantTypes, want.GrantTypes)) &&
+		(len(r.Scopes) == 0 || len(want.Scopes) == 0 || sameSet(r.Scopes, want.Scopes))
 }
 
 // Info is what the provider answered about a registered client.

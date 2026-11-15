@@ -459,6 +459,11 @@ func TestRegistrationSatisfies(t *testing.T) {
 			t.Errorf("%s: satisfied", name)
 		}
 	}
+	// What the provider defaults stands where the spec says nothing.
+	bare := Registration{ClientName: want.ClientName, RedirectURIs: want.RedirectURIs, PostLogoutRedirectURIs: want.PostLogoutRedirectURIs}
+	if !want.Satisfies(bare) {
+		t.Error("a provider default is drift")
+	}
 	got := regSpec()
 	got.Scopes = []string{"profile", "openid"}
 	if !got.Satisfies(want) {

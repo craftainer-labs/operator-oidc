@@ -265,7 +265,7 @@ func (c Client) Matches(s ClientSpec) bool {
 	if refresh == "" {
 		refresh = "true" // Keycloak's default
 	}
-	return c.rep.Enabled && !c.rep.BearerOnly && !c.rep.ImplicitFlowEnabled && !c.rep.DirectAccessGrantsEnabled &&
+	return c.rep.ClientID == s.ClientID && c.rep.Enabled && !c.rep.BearerOnly && !c.rep.ImplicitFlowEnabled && !c.rep.DirectAccessGrantsEnabled &&
 		c.rep.PublicClient == s.Public &&
 		c.rep.StandardFlowEnabled == slices.Contains(g, grantAuthorizationCode) &&
 		c.rep.ServiceAccountsEnabled == slices.Contains(g, grantClientCredentials) &&
