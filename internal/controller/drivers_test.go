@@ -505,7 +505,7 @@ func TestKeycloakDriverFailures(t *testing.T) {
 			_, err := d.rotateBegin(ctx, w, clientState{})
 			return err
 		}},
-		"the previous secret cannot be retired": {"DELETE /clients/kc-1/client-secret/rotated", func(d *keycloakDriver, w clientSpec) error {
+		"the previous secret cannot be retired": {"DELETE /clients/kc-1/client-secret/rotated", func(d *keycloakDriver, _ clientSpec) error {
 			return d.rotateFinish(ctx)
 		}},
 		"observe is refused": {"GET /clients/kc-1", func(d *keycloakDriver, w clientSpec) error {

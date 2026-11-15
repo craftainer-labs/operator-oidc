@@ -275,12 +275,12 @@ func TestKeycloakBindingCarriesDiscovery(t *testing.T) {
 	f := startIDP(t)
 	objs := kcObjects(f)
 	objs[3].(*oidcv1alpha1.IdentityProvider).Status.Discovery = &oidcv1alpha1.Discovery{
-		TokenEndpoint: "https://sso.example/token", JWKSURI: "https://sso.example/certs",
+		AuthorizationEndpoint: "https://sso.example/auth", JWKSURI: "https://sso.example/certs",
 	}
 	o := newOC(t, interceptor.Funcs{}, with(objs, oidcClient())...)
 	o.ok()
 	s := o.secret("team", "web")
-	if string(s.Data["tokenEndpoint"]) != "https://sso.example/token" || string(s.Data["jwksUri"]) != "https://sso.example/certs" {
+	if string(s.Data["authorizationEndpoint"]) != "https://sso.example/auth" || string(s.Data["jwksUri"]) != "https://sso.example/certs" {
 		t.Errorf("binding = %v", s.Data)
 	}
 	if _, has := s.Data["userinfoEndpoint"]; has {
@@ -495,7 +495,7 @@ func TestResolveSpec(t *testing.T) {
 // managing.
 func TestOrphanKeepsRegistrationState(t *testing.T) {
 	f := startDCR(t)
-	o := newOC(t, interceptor.Funcs{}, with(dcrObjects(f), oidcClient())...)
+	o := dcrOC(t, f, interceptor.Funcs{})
 	o.ok()
 	if err := o.r.options(nil).OnOrphan(context.Background(), o.get()); err != nil {
 		t.Fatal(err)
@@ -597,7 +597,7 @@ func TestClientErrorTexts(t *testing.T) {
 		ErrBindingNotUsable:               ErrBindingNotUsable.Error(),
 		errors.New("https://idp.example"): defaultText,
 	} {
-		var in error = fmt.Errorf("%w at https://idp.example/x?token=1", err)
+		in := error(fmt.Errorf("%w at https://idp.example/x?token=1", err))
 		if text == err.Error() { // an error of this package carries its own fixed text
 			in = err
 		}
