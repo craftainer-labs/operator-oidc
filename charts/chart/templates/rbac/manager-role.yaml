@@ -11,6 +11,16 @@ metadata:
   name: {{ include "operator-oidc.resourceName" (dict "suffix" "manager-role" "context" $) }}
 rules:
 - apiGroups:
+  - ""
+  resources:
+  - configmaps
+  - namespaces
+  - secrets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - oidc.craftainer.dev
   resources:
   - clusteridentityproviders

@@ -14,7 +14,9 @@ kubebuilder v4, from the `template-k8s-operator` template. This repository
 holds the API (types, CRDs, admission webhooks) and the backend clients
 (`internal/idpclient`: the Keycloak Admin REST client and the RFC 7591/7592
 dynamic client registration client, over lib-operator-go's egress policy, tested
-against a real Keycloak by the `Integration` workflow); the controller follows.
+against a real Keycloak by the `Integration` workflow) and the provider
+controllers (health probe and discovery, below); the `OidcClient` controller
+follows.
 
 ## Custom resources
 
@@ -59,6 +61,54 @@ includes `authorization_code`, which an unset `grantTypes` defaults to; a
 The CRD's CEL rules check these, and the validating webhooks parse every URI
 again (`RedirectURIProblem` and `WebOriginProblem` in `internal/webhook/v1alpha1`,
 which the controller reuses). Admission errors never echo a URL.
+
+## Provider health
+
+Each `ClusterIdentityProvider` and `IdentityProvider` is probed every
+`healthCheckInterval` (default 1 minute, plus up to 10% jitter) with
+lib-operator-go's `probe.Reconciler`, which writes `status.conditions` (`Ready`
+and `ServerReachable`), `status.lastProbeTime` and `status.observedGeneration`.
+A provider is `Ready` when:
+
+- its discovery document, fetched from `<issuer>/.well-known/openid-configuration`,
+  names the issuer exactly as `spec.issuer` does (OpenID Connect Discovery 1.0,
+  section 4.3), and every endpoint it names is an https URL without credentials,
+  a query or a fragment; and
+- for type `Keycloak`, the admin service account is accepted (one authenticated
+  request for the realm's clients).
+
+A provider of type `DynamicRegistration` is probed by its discovery document
+alone: registering a client to try it would leave one behind, and the initial
+access token can only be proved by using it. The document's `token_endpoint`,
+`authorization_endpoint`, `jwks_uri` and `userinfo_endpoint` are copied to
+`status.discovery` at the last successful probe; a failed probe leaves them as
+they were. A changed document is written with the probe's next status write.
+
+Every request goes through the egress policy (`EGRESS_MODE`, see below), the
+provider's own `proxyURL` and its `tls` settings. A condition carries one fixed
+text per kind of failure, and the log the same: never an address, a URL, a
+token or the provider's own words (NFR-0002). Admin Secrets and CA
+bundles are read live, not from a cache (a cluster provider's from the operator
+namespace, a namespaced one's from its own); the operator's Secret and ConfigMap caches hold only objects labelled
+`app.kubernetes.io/managed-by=operator-oidc`, so a change to an unlabelled
+Secret or ConfigMap is seen at the next probe interval, not at once.
+
+The operator keeps one client per provider between reconciles (a Keycloak admin
+token and its connections), replaced when the provider, its credentials, its CA
+bundle or its proxy change, and closed after 10 idle minutes.
+
+## Settings
+
+| Setting | Flag | Environment | Default |
+| --- | --- | --- | --- |
+| Which destinations a provider connection may not reach: `strict` (loopback, link-local, cloud metadata and the private ranges) or `allow-private` (all but the private ranges) | `--egress-mode` | `EGRESS_MODE` | `strict` |
+| The namespace cluster providers' admin Secrets and CA bundles are read from | `--operator-namespace` | `POD_NAMESPACE` | the pod's own namespace |
+
+The chart sets both (`egressMode`, and the downward API for `POD_NAMESPACE`) and
+rejects `manager.extraEnv` entries that use those names. A wrong value stops
+the operator at startup. `allow-private` is for a provider or proxy on a
+private address, the usual case inside a cluster; loopback, link-local and
+cloud metadata addresses stay refused in both modes.
 
 ## Install
 
