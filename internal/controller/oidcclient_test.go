@@ -597,9 +597,9 @@ func TestClientErrorTexts(t *testing.T) {
 		ErrBindingNotUsable:               ErrBindingNotUsable.Error(),
 		errors.New("https://idp.example"): defaultText,
 	} {
-		in := error(fmt.Errorf("%w at https://idp.example/x?token=1", err))
-		if text == err.Error() { // an error of this package carries its own fixed text
-			in = err
+		in := err // an error of this package carries its own fixed text
+		if text != err.Error() {
+			in = fmt.Errorf("%w at https://idp.example/x?token=1", err)
 		}
 		if got := categoryOnly(in); !strings.HasPrefix(got.Error(), text) || strings.Contains(got.Error(), "idp.example/x") {
 			t.Errorf("%v: %q", err, got)
@@ -612,5 +612,28 @@ func TestClientErrorTexts(t *testing.T) {
 	}
 	if got := categoryOnly(idpclient.ErrConnAuth); errors.Is(got, lifecycle.ErrUnreachable) {
 		t.Error("a refused credential is not an unreachable provider")
+	}
+}
+
+// A claim that never made a client has nothing to observe, create, update or
+// delete, and a spec the controller refuses does not rotate.
+func TestNothingMadeAndInvalidRotation(t *testing.T) {
+	ctx := context.Background()
+	var n nothingMade
+	if obs, err := n.Observe(ctx, oidcv1alpha1.OidcClientSpec{}); err != nil || obs.Exists {
+		t.Errorf("observe: %v, %v", obs, err)
+	}
+	if d, err := n.Create(ctx, oidcv1alpha1.OidcClientSpec{}); d != nil || err != nil {
+		t.Errorf("create: %v, %v", d, err)
+	}
+	if d, err := n.Update(ctx, oidcv1alpha1.OidcClientSpec{}, clientState{}); d != nil || err != nil {
+		t.Errorf("update: %v, %v", d, err)
+	}
+	if err := n.Delete(ctx, clientState{}); err != nil {
+		t.Errorf("delete: %v", err)
+	}
+	x := &clientExternal{wantErr: ErrInvalidClient}
+	if _, _, err := x.RotateBegin(ctx, oidcv1alpha1.OidcClientSpec{}, clientState{}, lifecycle.RotationState{}); !errors.Is(err, ErrInvalidClient) {
+		t.Errorf("rotate: %v", err)
 	}
 }
