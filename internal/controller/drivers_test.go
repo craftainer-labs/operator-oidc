@@ -450,11 +450,28 @@ func TestDCRUpdateWithoutAKnownSecret(t *testing.T) {
 	if _, err := d.update(context.Background(), w, clientState{reg: stateOf(t, o)}); err == nil {
 		t.Error("a failing read of the binding was ignored")
 	}
-	// The status write after a registration is a failure too.
+	// A registration the status cannot record is withdrawn, with its state.
 	d.persist = func(context.Context) error { return errors.New("boom") }
 	if _, err := d.create(context.Background(), w); err == nil {
 		t.Error("a failing status write was ignored")
 	}
+	if !f.saw("DELETE /register/dcr-2") || d.claim.GetExternalID() != "" {
+		t.Error("the registration was not withdrawn")
+	}
+	// One that cannot be withdrawn is an orphan risk.
+	f.with(func() { f.fail["DELETE /register/dcr-3"] = 500 })
+	if _, err := d.create(context.Background(), w); err == nil {
+		t.Error("a failing status write was ignored")
+	}
+	if cond(d.claim, conditionRegistrationUnconfirmed) == nil {
+		t.Error("an undeletable registration is an orphan risk")
+	}
+	// A rotation whose status cannot be written leaves the old registration.
+	d.claim.Status.Conditions = nil
+	if _, err := d.rotateBegin(context.Background(), w, clientState{reg: dcr.State{ClientID: "dcr-1"}}); err == nil || cond(d.claim, conditionRegistrationUnconfirmed) == nil {
+		t.Errorf("rotateBegin = %v", err)
+	}
+	d.persist = func(context.Context) error { return nil }
 	// A rotation whose registration fails is reported.
 	f.with(func() { f.badRegister = true })
 	if _, err := d.rotateBegin(context.Background(), w, clientState{reg: stateOf(t, o)}); !errors.Is(err, idpclient.ErrBadResponse) {

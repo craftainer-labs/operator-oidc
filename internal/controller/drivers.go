@@ -94,6 +94,10 @@ func (d *keycloakDriver) create(ctx context.Context, w clientSpec) (binding.Data
 	// Record the client before anything else can fail.
 	d.claim.SetExternalID(c.ID)
 	if err := d.persist(ctx); err != nil {
+		// A client the status does not name would be found by no one at deletion:
+		// take it back (a retry makes it again).
+		_ = d.k.Delete(ctx, c.ID)
+		d.claim.SetExternalID("")
 		return nil, err
 	}
 	return d.secretData(ctx, w, c.ID)
@@ -242,12 +246,28 @@ func (d *dcrDriver) register(ctx context.Context, w clientSpec) (idpclient.Info,
 		return info, err
 	}
 	d.record(info.State)
-	return info, d.persist(ctx)
+	return info, nil
+}
+
+// withdraw takes back a registration the status could not record, and its
+// state, so a claim deleted afterwards leaves nothing behind. A registration
+// that cannot be deleted is an orphan risk.
+func (d *dcrDriver) withdraw(ctx context.Context, st dcr.State) {
+	if d.d.Delete(ctx, st) != nil {
+		d.orphanRisk()
+		return
+	}
+	_ = d.store.Delete(ctx, d.claim)
+	d.claim.SetExternalID("")
 }
 
 func (d *dcrDriver) create(ctx context.Context, w clientSpec) (binding.Data, error) {
 	info, err := d.register(ctx, w)
 	if err != nil {
+		return nil, err
+	}
+	if err := d.persist(ctx); err != nil {
+		d.withdraw(ctx, info.State)
 		return nil, err
 	}
 	return d.data(info.State.ClientID, info.Secret), nil
@@ -296,6 +316,12 @@ func (d *dcrDriver) rotateBegin(ctx context.Context, w clientSpec, cur clientSta
 	}
 	info, err := d.register(ctx, w)
 	if err != nil {
+		return nil, err
+	}
+	if err := d.persist(ctx); err != nil {
+		// The new registration is stored and the old one is not deleted: the old
+		// one stays at the provider, with no token the operator still holds.
+		d.orphanRisk()
 		return nil, err
 	}
 	// The new registration is stored and recorded. The old one must not outlive

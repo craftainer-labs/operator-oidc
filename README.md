@@ -131,6 +131,8 @@ a probe found them); never to a status, an Event or a log.
   `craftainer.dev/orphaned=true`. A provider that answers a registration with a
   document the operator cannot use may have made a client it cannot manage: the
   claim gets the condition `RegistrationUnconfirmed` and a Warning Event.
+- **Web origins** are a Keycloak setting: RFC 7591 has no such field, so a
+  dynamically registered client does not carry them.
 - **Checked twice.** The controller checks the redirect URIs, post-logout redirect
   URIs, web origins and scopes (against `allowedScopes`) again, as the webhook
   does, and refuses a claim that broke them with a fixed text before it contacts
