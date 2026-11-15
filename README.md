@@ -11,7 +11,10 @@ with an `OidcClient`; the operator creates it on the provider and writes its
 client id and secret to a binding Secret. It is built on
 [`lib-operator-go`](https://github.com/craftainer-labs/lib-operator-go) and
 kubebuilder v4, from the `template-k8s-operator` template. This repository
-holds the API (types, CRDs, admission webhooks); the controller follows.
+holds the API (types, CRDs, admission webhooks) and the backend clients
+(`internal/idpclient`: the Keycloak Admin REST client and the RFC 7591/7592
+dynamic client registration client, over lib-operator-go's egress policy, tested
+against a real Keycloak by the `Integration` workflow); the controller follows.
 
 ## Custom resources
 

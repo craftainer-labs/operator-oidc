@@ -1,0 +1,131 @@
+# The operator's backend clients against a real Keycloak (NO6b-1): the version
+# of the dev stack (NR4), pinned by digest, with TLS on (a CA and server
+# certificate generated in the job), the preview feature client-secret-rotation
+# on, and the clients verifying the certificate chain and host name. The tests
+# are test/integration (build tag `integration`); the certificates and the
+# bootstrap administrator's password are the files test/integration/gen-certs.sh
+# makes.
+#
+# Instance-owned: listed in .github/template-sync-manifest.local.yml, so
+# template sync never replaces it. A step-started container rather than a
+# `services:` container, because a service container starts before the
+# checkout and so cannot be handed the generated certificates.
+name: Integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # renovate: datasource=docker depName=quay.io/keycloak/keycloak
+  KEYCLOAK_IMAGE: quay.io/keycloak/keycloak:26.7.4@sha256:82a77884f3af238beab1e7afd63b5f530e1b5c0590bd7aa60b40a40463e29b2c
+  # The version scripts/develop.d/10-go.sh installs for the checks lane.
+  # renovate: datasource=github-releases depName=golangci/golangci-lint
+  GOLANGCI_LINT_VERSION: 2.15.0
+
+jobs:
+  keycloak:
+    name: Keycloak with TLS and client-secret-rotation
+    # renovate: datasource=github-runners depName=ubuntu
+    runs-on: ${{ vars.CI_RUNNER_AMD64 || 'ubuntu-24.04' }}
+    timeout-minutes: 25
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      # The checks lane lints with the default build tags, so test/integration
+      # (build tag `integration`) is only compiled and linted here. Same
+      # release, checksum-verified like scripts/develop.d/10-go.sh, and the
+      # repository's .golangci.yml.
+      - name: Install golangci-lint
+        run: |
+          set -euo pipefail
+          dir="golangci-lint-${GOLANGCI_LINT_VERSION}-linux-amd64"
+          base="https://github.com/golangci/golangci-lint/releases/download/v${GOLANGCI_LINT_VERSION}"
+          tmp="$RUNNER_TEMP/golangci-lint"
+          mkdir -p "$tmp"
+          curl -LsSf -o "$tmp/$dir.tar.gz" "$base/$dir.tar.gz"
+          curl -LsSf -o "$tmp/checksums.txt" "$base/golangci-lint-${GOLANGCI_LINT_VERSION}-checksums.txt"
+          (cd "$tmp" && awk -v f="$dir.tar.gz" '$2 == f' checksums.txt | sha256sum -c -)
+          tar -xzf "$tmp/$dir.tar.gz" -C "$tmp"
+          echo "$tmp/$dir" >> "$GITHUB_PATH"
+
+      - name: Lint the integration tests
+        run: golangci-lint run --build-tags integration ./test/integration/...
+
+      - name: Generate the CA, the server certificate and the administrator's password
+        run: |
+          set -euo pipefail
+          test/integration/gen-certs.sh "$RUNNER_TEMP/keycloak-tls"
+          echo "::add-mask::$(cat "$RUNNER_TEMP/keycloak-tls/admin-password")"
+
+      # start-dev, not start: one node, an embedded database and no hostname
+      # strictness, and TLS only (the plain port is off). KC_HOSTNAME is the
+      # URL the tests use, so the registration_client_uri of a registered client
+      # is on the same origin as the registration endpoint.
+      - name: Start Keycloak with TLS and the secret-rotation feature
+        run: |
+          set -euo pipefail
+          KC_BOOTSTRAP_ADMIN_USERNAME=admin \
+          KC_BOOTSTRAP_ADMIN_PASSWORD="$(cat "$RUNNER_TEMP/keycloak-tls/admin-password")" \
+          docker run -d --name keycloak -p 127.0.0.1:8443:8443 \
+            -v "$RUNNER_TEMP/keycloak-tls:/tls:ro" \
+            -e KC_BOOTSTRAP_ADMIN_USERNAME -e KC_BOOTSTRAP_ADMIN_PASSWORD \
+            -e KC_HTTP_ENABLED=false \
+            -e KC_HOSTNAME=https://localhost:8443 \
+            -e KC_HTTPS_CERTIFICATE_FILE=/tls/server.crt \
+            -e KC_HTTPS_CERTIFICATE_KEY_FILE=/tls/server.key \
+            -e KC_FEATURES=client-secret-rotation \
+            "$KEYCLOAK_IMAGE" start-dev
+          for _ in $(seq 1 90); do
+            if [ "$(docker inspect -f '{{.State.Running}}' keycloak)" != "true" ]; then
+              docker logs keycloak
+              echo "Keycloak exited" >&2
+              exit 1
+            fi
+            if curl -fsS --cacert "$RUNNER_TEMP/keycloak-tls/ca.crt" -o /dev/null \
+                https://localhost:8443/realms/master/.well-known/openid-configuration; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs keycloak
+          echo "Keycloak did not answer over TLS" >&2
+          exit 1
+
+      - name: Run the integration tests
+        run: |
+          set -euo pipefail
+          export KEYCLOAK_ADDRESS=https://localhost:8443
+          export KEYCLOAK_CA_FILE="$RUNNER_TEMP/keycloak-tls/ca.crt"
+          export KEYCLOAK_ADMIN_USERNAME=admin
+          export KEYCLOAK_ADMIN_PASSWORD_FILE="$RUNNER_TEMP/keycloak-tls/admin-password"
+          go test -tags integration -race -count=1 -v -timeout 15m \
+            -coverpkg=./internal/idpclient/ -coverprofile="$RUNNER_TEMP/integration.cover" \
+            ./test/integration/...
+          go tool cover -func="$RUNNER_TEMP/integration.cover" | tail -n 1
+
+      - name: Show the server log
+        if: failure()
+        run: docker logs keycloak
+
+      - name: Remove the server
+        if: always()
+        run: docker rm -f keycloak
