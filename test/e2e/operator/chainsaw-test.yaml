@@ -1,7 +1,8 @@
 # Installs the Helm chart into a Pod Security `restricted` namespace, with the
 # manager running as an arbitrary UID, then exercises the oidc.craftainer.dev API
-# end to end: the CRDs, their defaults and the webhooks (the controllers come
-# later). The steps run in order; the cluster is thrown away afterwards.
+# end to end: the CRDs, their defaults, the webhooks and the providers' health
+# probes (the OidcClient controller comes later). The steps run in order; the
+# cluster is thrown away afterwards.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -28,6 +29,9 @@ spec:
                 --set manager.image.tag="$E2E_IMAGE_TAG" \
                 --set manager.image.pullPolicy=Never \
                 --set manager.podSecurityContext.runAsUser=12345 \
+                --set egressMode=allow-private \
+                --set 'manager.extraEnv[0].name=NO_PROXY' \
+                --set 'manager.extraEnv[0].value=.svc\,.cluster.local' \
                 --wait --timeout 4m
         - assert:
             resource:
@@ -50,6 +54,16 @@ spec:
               test "$uid" = 12345
               ro=$(kubectl get pods -n "$NAMESPACE" -l control-plane=controller-manager -o jsonpath='{.items[0].spec.containers[0].securityContext.readOnlyRootFilesystem}')
               test "$ro" = true
+              # EB-5: extraEnv reaches the container, after the chart's own.
+              podenv() { kubectl get pods -n "$NAMESPACE" -l control-plane=controller-manager -o jsonpath="{.items[0].spec.containers[0].env[?(@.name==\"$1\")].value}"; }
+              test "$(podenv NO_PROXY)" = ".svc,.cluster.local"
+              test "$(podenv EGRESS_MODE)" = allow-private
+              # A name the chart sets itself is refused when the chart is rendered.
+              if helm template x "$E2E_CHART_DIR" --set 'manager.extraEnv[0].name=EGRESS_MODE' \
+                  --set 'manager.extraEnv[0].value=strict' >/dev/null 2>&1; then
+                echo "extraEnv accepted EGRESS_MODE"
+                exit 1
+              fi
         - assert:
             resource:
               apiVersion: coordination.k8s.io/v1
@@ -89,6 +103,59 @@ spec:
                 name: keycloak
               spec:
                 allowedScopes: [openid, profile, email]
+
+    - name: a provider without its admin Secret is not Ready, and says why
+      # The probe writes the status. The expressions are null-safe: a missing
+      # field would make the filter fail instead of waiting out the timeout.
+      try:
+        - assert:
+            timeout: 2m
+            resource:
+              apiVersion: oidc.craftainer.dev/v1alpha1
+              kind: IdentityProvider
+              metadata:
+                name: keycloak
+              status:
+                (conditions[?type == 'Ready'] | [0].status): "False"
+                (conditions[?type == 'Ready'] | [0].reason): InvalidServer
+
+    - name: a provider that cannot be reached is not Ready, and its status names no host
+      try:
+        - apply:
+            resource:
+              apiVersion: v1
+              kind: Secret
+              metadata:
+                name: kc-admin
+              stringData:
+                clientId: operator
+                clientSecret: hunter2
+        - apply:
+            resource:
+              apiVersion: oidc.craftainer.dev/v1alpha1
+              kind: IdentityProvider
+              metadata:
+                name: unreachable
+              spec:
+                type: Keycloak
+                issuer: https://kc.invalid/realms/craftainer
+                keycloak: {baseURL: "https://kc.invalid", realm: craftainer}
+                adminCredentialsSecretRef: {name: kc-admin}
+        - assert:
+            timeout: 3m
+            resource:
+              apiVersion: oidc.craftainer.dev/v1alpha1
+              kind: IdentityProvider
+              metadata:
+                name: unreachable
+              status:
+                (conditions[?type == 'Ready'] | [0].status): "False"
+                (conditions[?type == 'Ready'] | [0].reason): ServerUnreachable
+                (conditions[?type == 'ServerReachable'] | [0].status): "False"
+                (lastProbeTime != `null`): true
+                (contains(to_string(conditions), 'kc.invalid')): false
+                (contains(to_string(conditions), 'hunter2')): false
+                (discovery == `null`): true
 
     - name: the webhook rejects a proxy URL with credentials without echoing it
       try:

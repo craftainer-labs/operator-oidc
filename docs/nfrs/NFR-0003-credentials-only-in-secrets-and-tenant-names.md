@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented (the clients; the controller that builds them follows in NO6b-2)
+Implemented (the clients and the provider controllers; the `OidcClient` controller follows in NO6b-2b)
 
 ## Attribute
 

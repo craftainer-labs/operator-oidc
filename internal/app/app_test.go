@@ -15,16 +15,28 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
+
+	"github.com/craftainer-labs/lib-operator-go/pkg/apis/common"
+	"github.com/craftainer-labs/lib-operator-go/pkg/conditions"
+	"github.com/craftainer-labs/lib-operator-go/pkg/egress"
+
+	oidcv1alpha1 "github.com/craftainer-labs/operator-oidc/api/v1alpha1"
 )
 
 // These tests run the real manager against envtest's kube-apiserver. They need
@@ -44,12 +56,21 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	testCfg = cfg
+	// The operator needs its namespace; the pod's service account is not here.
+	_ = os.Setenv("POD_NAMESPACE", "operator-test")
 	code := m.Run()
 	if err := env.Stop(); err != nil {
 		fmt.Fprintln(os.Stderr, "cannot stop envtest:", err)
 		code = 1
 	}
 	os.Exit(code)
+}
+
+// skipNameValidation lets several managers register the same controller name
+// in one test process (controller-runtime otherwise rejects the second).
+func skipNameValidation(o *ctrl.Options) {
+	skip := true
+	o.Controller = config.Controller{SkipNameValidation: &skip}
 }
 
 func freeAddr(t *testing.T) string {
@@ -70,7 +91,7 @@ func start(t *testing.T, args []string, opts ...Option) (stop func() error) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- Run(ctx, args, getConfig, io.Discard, opts...) }()
+	go func() { done <- Run(ctx, args, getConfig, io.Discard, append(opts, skipNameValidation)...) }()
 	var once bool
 	return func() error {
 		if once {
@@ -196,7 +217,7 @@ func TestRunReportsAStartError(t *testing.T) {
 		"--health-probe-bind-address=0", "--metrics-bind-address=0",
 		"--webhook-port=" + portOf(freeAddr(t)), "--webhook-cert-path=" + t.TempDir(),
 	}
-	err := Run(context.Background(), args, getConfig, io.Discard)
+	err := Run(context.Background(), args, getConfig, io.Discard, skipNameValidation)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("run the manager"))
 }
@@ -263,7 +284,7 @@ func TestRunReportsASetupError(t *testing.T) {
 	g := NewWithT(t)
 	boom := errors.New("boom")
 	orig := setupManager
-	setupManager = func(ctrl.Manager, bool) error { return boom }
+	setupManager = func(ctrl.Manager, bool, controllerSettings) error { return boom }
 	defer func() { setupManager = orig }()
 
 	err := Run(context.Background(), []string{"--health-probe-bind-address=0", "--metrics-bind-address=0", "--webhook-port=-1"}, getConfig, io.Discard)
@@ -299,4 +320,136 @@ func TestAddChecks(t *testing.T) {
 	g.Expect(addChecks(fakeChecks{})).To(Succeed())
 	g.Expect(addChecks(fakeChecks{healthzErr: boom})).To(MatchError(boom))
 	g.Expect(addChecks(fakeChecks{readyzErr: boom})).To(MatchError(boom))
+}
+
+func TestControllerSettings(t *testing.T) {
+	g := NewWithT(t)
+	t.Setenv("EGRESS_MODE", "")
+	t.Setenv("POD_NAMESPACE", "")
+	old := serviceAccountNamespaceFile
+	t.Cleanup(func() { serviceAccountNamespaceFile = old })
+
+	// Without an operator namespace (no flag, no environment, no service
+	// account) startup fails.
+	serviceAccountNamespaceFile = filepath.Join(t.TempDir(), "missing")
+	s, err := parseFlags(nil, io.Discard)
+	g.Expect(err).NotTo(HaveOccurred())
+	_, err = s.controllerSettings()
+	g.Expect(err).To(MatchError(ErrNoOperatorNamespace))
+
+	// The pod's namespace comes from the service account.
+	nsFile := filepath.Join(t.TempDir(), "namespace")
+	g.Expect(os.WriteFile(nsFile, []byte("operator-ns\n"), 0o600)).To(Succeed())
+	serviceAccountNamespaceFile = nsFile
+	cs, err := s.controllerSettings()
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(cs.namespace).To(Equal("operator-ns"))
+	// Default: strict egress.
+	g.Expect(cs.egress.Check(netip.MustParseAddr("10.0.0.1"))).To(MatchError(egress.ErrBlocked))
+
+	// The environment supplies the flag defaults; a flag wins.
+	t.Setenv("EGRESS_MODE", "allow-private")
+	t.Setenv("POD_NAMESPACE", "from-env")
+	s, err = parseFlags(nil, io.Discard)
+	g.Expect(err).NotTo(HaveOccurred())
+	cs, err = s.controllerSettings()
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(cs.namespace).To(Equal("from-env"))
+	g.Expect(cs.egress.Check(netip.MustParseAddr("10.0.0.1"))).To(Succeed())
+	g.Expect(cs.egress.Check(netip.MustParseAddr("127.0.0.1"))).To(MatchError(egress.ErrBlocked))
+	s, err = parseFlags([]string{"--egress-mode=strict", "--operator-namespace=flag-ns"}, io.Discard)
+	g.Expect(err).NotTo(HaveOccurred())
+	cs, err = s.controllerSettings()
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(cs.namespace).To(Equal("flag-ns"))
+	g.Expect(cs.egress.Check(netip.MustParseAddr("10.0.0.1"))).To(MatchError(egress.ErrBlocked))
+}
+
+// An invalid setting fails startup before the operator contacts a cluster.
+func TestRunRejectsInvalidSettings(t *testing.T) {
+	g := NewWithT(t)
+	noCluster := func() (*rest.Config, error) { panic("the cluster was contacted") }
+	err := Run(context.Background(), []string{"--egress-mode=off"}, noCluster, io.Discard)
+	g.Expect(err).To(MatchError(egress.ErrInvalidMode))
+}
+
+// Each provider kind has a probe controller that writes the kind's status. The
+// manager here reaches no provider (the egress policy refuses the loopback
+// address), so the probe's verdicts are the two it can reach without one: a
+// provider it cannot connect to, and one whose admin Secret is missing.
+func TestProviderProbesWriteTheStatusOfBothKinds(t *testing.T) {
+	g := NewWithT(t)
+	ctx := context.Background()
+	c, err := client.New(testCfg, client.Options{Scheme: scheme})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	const opsNS = "operator-test" // POD_NAMESPACE, see TestMain
+	for _, name := range []string{opsNS, "team"} {
+		err := c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}})
+		g.Expect(client.IgnoreAlreadyExists(err)).To(Succeed())
+	}
+	err = c.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "kc-admin", Namespace: opsNS},
+		Data:       map[string][]byte{"clientId": []byte("operator"), "clientSecret": []byte("pw")},
+	})
+	g.Expect(client.IgnoreAlreadyExists(err)).To(Succeed())
+	keycloak := oidcv1alpha1.ProviderConfig{
+		Type: oidcv1alpha1.ProviderKeycloak, Issuer: "https://127.0.0.1/realms/main",
+		Keycloak: &oidcv1alpha1.KeycloakConfig{BaseURL: "https://127.0.0.1", Realm: "main"},
+	}
+	cluster := &oidcv1alpha1.ClusterIdentityProvider{ObjectMeta: metav1.ObjectMeta{Name: "probe-cluster"}}
+	cluster.Spec.ProviderConfig = keycloak
+	cluster.Spec.AdminCredentialsSecretRef = common.AdminSecretRef{Name: "kc-admin", Namespace: opsNS}
+	cluster.Spec.AllowedNamespaces = common.AllowedNamespaces{From: common.NamespacesAll}
+	g.Expect(c.Create(ctx, cluster)).To(Succeed())
+	namespaced := &oidcv1alpha1.IdentityProvider{ObjectMeta: metav1.ObjectMeta{Name: "probe-team", Namespace: "team"}}
+	namespaced.Spec.ProviderConfig = keycloak
+	namespaced.Spec.AdminCredentialsSecretRef = common.AdminSecretRef{Name: "missing"}
+	g.Expect(c.Create(ctx, namespaced)).To(Succeed())
+	t.Cleanup(func() { _ = c.Delete(ctx, cluster); _ = c.Delete(ctx, namespaced) })
+
+	probeAddr := freeAddr(t)
+	stop := start(t, []string{"--health-probe-bind-address=" + probeAddr, "--metrics-bind-address=0", "--webhook-port=-1"})
+	defer func() { _ = stop() }()
+
+	ready := func(obj client.Object, st *common.ServerStatus) func() (string, error) {
+		return func() (string, error) {
+			if err := c.Get(ctx, client.ObjectKeyFromObject(obj), obj); err != nil {
+				return "", err
+			}
+			cond := meta.FindStatusCondition(st.Conditions, conditions.Ready)
+			if cond == nil {
+				return "", nil
+			}
+			return string(cond.Status) + "/" + cond.Reason, nil
+		}
+	}
+	g.Eventually(ready(cluster, &cluster.Status.ServerStatus), 30*time.Second, 200*time.Millisecond).Should(Equal("False/" + conditions.ServerUnreachable))
+	// A probe that ran is timestamped; a provider that cannot be probed is not.
+	g.Expect(cluster.Status.LastProbeTime).NotTo(BeNil())
+	g.Expect(cluster.Status.Discovery).To(BeNil())
+	g.Eventually(ready(namespaced, &namespaced.Status.ServerStatus), 30*time.Second, 200*time.Millisecond).Should(Equal("False/" + conditions.InvalidServer))
+	g.Expect(namespaced.Status.LastProbeTime).To(BeNil())
+	g.Expect(stop()).To(Succeed())
+}
+
+// The Secret and the ConfigMap cache each keep only the objects labelled
+// managed-by this operator (EB-2); the probes' watches go through them.
+func TestCacheByObjectRestrictsSecretsAndConfigMaps(t *testing.T) {
+	g := NewWithT(t)
+	want := "app.kubernetes.io/managed-by=" + EventRecorderName
+	var secrets, configMaps int
+	for obj, by := range cacheByObject() {
+		g.Expect(by.Label).NotTo(BeNil())
+		g.Expect(by.Label.String()).To(Equal(want))
+		switch obj.(type) {
+		case *corev1.Secret:
+			secrets++
+		case *corev1.ConfigMap:
+			configMaps++
+		default:
+			t.Errorf("unexpected cache restriction for %T", obj)
+		}
+	}
+	g.Expect([]int{secrets, configMaps}).To(Equal([]int{1, 1}))
 }

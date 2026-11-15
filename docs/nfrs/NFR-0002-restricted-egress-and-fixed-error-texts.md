@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented (the clients; the controller that builds them follows in NO6b-2)
+Implemented (the clients, the provider probes and the connection cache; the `OidcClient` controller follows in NO6b-2b)
 
 ## Attribute
 
@@ -30,6 +30,13 @@ on 2026-11-03 and implemented once, in lib-operator-go's `pkg/egress`
   scan or name resolution out of the operator and a hostile provider cannot
   write into a condition. The logs carry the same categories and the HTTP status
   and nothing else.
+- The provider probe and the discovery fetch dial through the same policy and
+  the provider's proxy, and the probe helper writes only fixed condition texts.
+  The operator's own log carries the same texts: the controllers log the
+  category of an error, never the error. The issuer's discovery document is
+  checked (its `issuer` must be the one configured, every endpoint an https URL
+  without credentials, a query or a fragment, at most 2048 bytes) before any of
+  it is stored in `status.discovery`.
 - Identifiers that go into a URL path come from the provider (a Keycloak client
   or scope id) or from status, and are checked against the shape of a provider
   id before they are used (`ErrInvalidID`); a realm is checked against the CRD's
@@ -49,6 +56,13 @@ policy, is one category and that the error text holds nothing else;
 `TestDCRRegisterRefusals` that a status, a body or a wrong credential is not
 echoed; `TestKeycloakEveryRequestMatters` that a failure of any request of an
 operation reaches the caller without the body; `TestKeycloakRefusals` and
-`TestNewKeycloak` the id and realm checks. The pkg/egress ranges, the proxies and
+`TestNewKeycloak` the id and realm checks. `TestCategoryOnly` and `TestCoarseLogsOnceAndKeepsTheKind` (`internal/controller`)
+that every kind of failure of a probe or a resolution has one fixed text,
+whatever the raw error holds; `TestProbeFailuresAreCategories` and
+`TestRealPolicyRefusesLoopback` that the probe reports categories and
+reaches nothing the policy refuses; `TestDiscoverRefusals`
+(`internal/idpclient`) the discovery document checks. The e2e run checks that
+the status of an unreachable provider names neither its host nor its
+credentials. The pkg/egress ranges, the proxies and
 the deadlines are tested in lib-operator-go. The integration lane checks the
 policy's refusal and the texts against a real Keycloak.
