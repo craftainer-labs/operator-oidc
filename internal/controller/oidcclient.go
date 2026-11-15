@@ -438,5 +438,5 @@ func (r *ClientReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // errLost is what a claim whose registration state is gone gets.
 func errLost() error { return fmt.Errorf("%w: no stored registration", idpclient.ErrRegistrationLost) }
 
-// isNotFound reports a client or registration the provider does not know.
-func isNotFound(err error) bool { return errors.Is(err, idpclient.ErrNotFound) }
+// clientGone reports a client or registration the provider does not know.
+func clientGone(err error) bool { return errors.Is(err, idpclient.ErrNotFound) }

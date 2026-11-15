@@ -60,7 +60,7 @@ func (d *keycloakDriver) observe(ctx context.Context, w clientSpec, wantErr erro
 		return none, nil
 	}
 	c, err := d.k.Get(ctx, id, d.marker())
-	if isNotFound(err) {
+	if clientGone(err) {
 		return none, nil
 	}
 	if err != nil {
