@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
+	"github.com/craftainer-labs/lib-operator-go/pkg/binding"
 	"github.com/craftainer-labs/lib-operator-go/pkg/conditions"
 	"github.com/craftainer-labs/lib-operator-go/pkg/dcr"
 	"github.com/craftainer-labs/lib-operator-go/pkg/lifecycle"
@@ -634,6 +635,22 @@ func TestNothingMadeAndInvalidRotation(t *testing.T) {
 	}
 	x := &clientExternal{wantErr: ErrInvalidClient}
 	if _, _, err := x.RotateBegin(ctx, oidcv1alpha1.OidcClientSpec{}, clientState{}, lifecycle.RotationState{}); !errors.Is(err, ErrInvalidClient) {
+		t.Errorf("rotate: %v", err)
+	}
+}
+
+// failingDriver fails a rotation.
+type failingDriver struct{ driver }
+
+func (failingDriver) rotateBegin(context.Context, clientSpec, clientState) (binding.Data, error) {
+	return nil, idpclient.ErrConnFailed
+}
+
+// A rotation the provider refuses is reported with the fixed text of its kind.
+func TestRotationFailureIsCoarse(t *testing.T) {
+	x := &clientExternal{drv: failingDriver{}}
+	_, _, err := x.RotateBegin(context.Background(), oidcv1alpha1.OidcClientSpec{}, clientState{}, lifecycle.RotationState{})
+	if !errors.Is(err, lifecycle.ErrUnreachable) || err.Error() != "the connection to the provider failed" {
 		t.Errorf("rotate: %v", err)
 	}
 }
