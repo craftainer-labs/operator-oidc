@@ -123,9 +123,9 @@ func TestProbeFailuresAreCategories(t *testing.T) {
 		broken := Prober{Config: Config{HostDialer: func(*url.URL) (egress.DialFunc, error) { return nil, refusal }}}
 		_, err := broken.Probe(ctx, keycloakProvider("team", f), connFor(f, adminCreds))
 		if !errors.Is(err, server.ErrInvalidServer) || !errors.Is(err, refusal) {
-			t.Errorf("a dialer error %v lost its kind: %v", refusal, err)
+			t.Fatalf("a dialer error %v lost its kind: %v", refusal, err)
 		}
-		if err.Error() != egressRefused {
+		if err.Error() != "the connection to the provider was refused by the egress policy" {
 			t.Errorf("a dialer error %v shows %q", refusal, err.Error())
 		}
 	}
