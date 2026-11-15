@@ -120,7 +120,7 @@ func TestProbeFailuresAreCategories(t *testing.T) {
 
 	// A dialer that cannot be built (a proxy the policy refuses).
 	broken := Prober{Config: Config{HostDialer: func(*url.URL) (egress.DialFunc, error) { return nil, egress.ErrProxyUserinfo }}}
-	if _, err := broken.Probe(ctx, keycloakProvider("team", f), connFor(f, adminCreds)); !errors.Is(err, server.ErrInvalidServer) {
+	if _, err := broken.Probe(ctx, keycloakProvider("team", f), connFor(f, adminCreds)); !errors.Is(err, server.ErrInvalidServer) || err.Error() != "the connection to the provider was refused by the egress policy" {
 		t.Errorf("a dialer error: %v", err)
 	}
 

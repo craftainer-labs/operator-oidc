@@ -68,6 +68,10 @@ var rules = []rule{
 	{is(server.ErrServerNotFound), "the referenced provider was not found"},
 	{is(server.ErrNamespaceNotAllowed), "the claim's namespace is not allowed by the provider"},
 	{is(server.ErrAdminSecretNamespaceForbidden), "the provider's admin credentials are not usable"},
+	// The egress rules come before ErrInvalidServer: a proxy the policy refuses
+	// reaches here wrapped in it, and the more specific text is the true one.
+	{is(egress.ErrProxy), "the connection to the provider was refused by the egress policy"},
+	{is(egress.ErrProxyUserinfo), "the connection to the provider was refused by the egress policy"},
 	{is(server.ErrInvalidServer), invalidProvider},
 	{is(server.ErrOperatorNamespaceUnset), invalidProvider},
 	{is(server.ErrUnknownServerKind), invalidProvider},
@@ -76,8 +80,6 @@ var rules = []rule{
 	{is(idpclient.ErrInvalidCA), invalidProvider},
 	{is(idpclient.ErrNoCredentials), invalidProvider},
 	{is(idpclient.ErrNoDialer), invalidProvider},
-	{is(egress.ErrProxy), "the connection to the provider was refused by the egress policy"},
-	{is(egress.ErrProxyUserinfo), "the connection to the provider was refused by the egress policy"},
 	{is(idpclient.ErrConnPolicy), "the connection to the provider was refused by the egress policy"},
 	{is(idpclient.ErrConnTLS), "the TLS handshake with the provider failed"},
 	{is(idpclient.ErrConnAuth), "the provider refused the operator's credentials"},
