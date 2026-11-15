@@ -89,7 +89,7 @@ func (f *idp) tokenCount() int {
 	return f.tokens
 }
 
-func startIdP(t *testing.T) *idp {
+func startIDP(t *testing.T) *idp {
 	t.Helper()
 	f := &idp{}
 	f.srv = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

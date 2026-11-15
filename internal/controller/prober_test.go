@@ -40,7 +40,7 @@ func discoveryOf(f *idp) *oidcv1alpha1.Discovery {
 // cannot miss.
 func TestProbeKeycloak(t *testing.T) {
 	ctx := context.Background()
-	f := startIdP(t)
+	f := startIDP(t)
 	p := Prober{Config: Config{HostDialer: direct}}
 	conn := connFor(f, adminCreds)
 
@@ -70,7 +70,7 @@ func TestProbeKeycloak(t *testing.T) {
 		t.Errorf("an unchanged document cleared lastProbeTime: %v", err)
 	}
 	// A changed one clears it, so the helper writes the status.
-	ns.Status.Discovery = &oidcv1alpha1.Discovery{TokenEndpoint: "https://old.example/token"}
+	ns.Status.Discovery = &oidcv1alpha1.Discovery{AuthorizationEndpoint: "https://old.example/auth"}
 	if _, err := p.Probe(ctx, ns, conn); err != nil || ns.Status.LastProbeTime != nil || *ns.Status.Discovery != *want {
 		t.Errorf("a changed document: %+v, %v", ns.Status, err)
 	}
@@ -80,8 +80,8 @@ func TestProbeKeycloak(t *testing.T) {
 // alone, and an issuer on another host is verified by its own name.
 func TestProbeDynamicRegistration(t *testing.T) {
 	ctx := context.Background()
-	f := startIdP(t)
-	other := startIdP(t)
+	f := startIDP(t)
+	other := startIDP(t)
 	p := Prober{Config: Config{HostDialer: direct}}
 	srv := dcrProvider("team", "https://idp.example/register")
 	srv.Spec.Issuer = oidcv1alpha1.HTTPSURL(f.issuer())
@@ -109,7 +109,7 @@ func TestProbeDynamicRegistration(t *testing.T) {
 
 func TestProbeFailuresAreCategories(t *testing.T) {
 	ctx := context.Background()
-	f := startIdP(t)
+	f := startIDP(t)
 	p := Prober{Config: Config{HostDialer: direct}}
 
 	// A server kind this operator does not own.
@@ -143,7 +143,7 @@ func TestProbeFailuresAreCategories(t *testing.T) {
 		}, idpclient.ErrInvalidEndpoint, invalidProvider},
 	}
 	for name, tc := range cases {
-		prov := startIdP(t)
+		prov := startIDP(t)
 		srv := keycloakProvider("team", prov)
 		conn := connFor(prov, adminCreds)
 		tc.edit(srv, &conn, prov)
@@ -160,7 +160,7 @@ func TestProbeFailuresAreCategories(t *testing.T) {
 // The probe uses the real policy when no dialer is set: it refuses the
 // loopback address and says so by category.
 func TestRealPolicyRefusesLoopback(t *testing.T) {
-	f := startIdP(t)
+	f := startIDP(t)
 	p := Prober{Config: Config{Egress: egress.NewPolicy(egress.ModeAllowPrivate)}}
 	_, err := p.Probe(context.Background(), keycloakProvider("team", f), connFor(f, adminCreds))
 	if !errors.Is(err, idpclient.ErrConnPolicy) || err.Error() != "the connection to the provider was refused by the egress policy" {

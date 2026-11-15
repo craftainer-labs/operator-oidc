@@ -30,7 +30,7 @@ func config(c client.Client) Config {
 // against the provider and is replaced when the admin credentials change.
 func TestBackendKeycloakIsCachedAndReplacedWithItsCredentials(t *testing.T) {
 	ctx := context.Background()
-	f := startIdP(t)
+	f := startIDP(t)
 	c := fakeClient(t, namespace("team"), secret("team", "admin", adminCreds), caConfigMap("team", f), keycloakProvider("team", f))
 	cfg := config(c)
 	kc := ref(kindIdentityProvider, "kc")
@@ -76,7 +76,7 @@ func TestBackendKeycloakIsCachedAndReplacedWithItsCredentials(t *testing.T) {
 // admin Secret is the operator namespace's.
 func TestBackendClusterProvider(t *testing.T) {
 	ctx := context.Background()
-	f := startIdP(t)
+	f := startIDP(t)
 	closed := clusterKeycloak(f)
 	closed.Name = "closed"
 	closed.Spec.AllowedNamespaces = common.AllowedNamespaces{From: common.NamespacesSelector}
@@ -160,7 +160,7 @@ func TestBackendDynamicRegistration(t *testing.T) {
 // is gone or unusable drops its cached client.
 func TestBackendRefusals(t *testing.T) {
 	ctx := context.Background()
-	f := startIdP(t)
+	f := startIDP(t)
 	base := func() []client.Object {
 		return []client.Object{namespace("team"), secret("team", "admin", adminCreds), caConfigMap("team", f)}
 	}
@@ -240,7 +240,7 @@ func isNotFound(err, want error) bool {
 // category and nothing of the URL.
 func TestBackendClientsThatCannotBeBuilt(t *testing.T) {
 	ctx := context.Background()
-	f := startIdP(t)
+	f := startIDP(t)
 	badRealm := keycloakProvider("team", f)
 	badRealm.Spec.Keycloak.Realm = ".."
 	plain := dcrProvider("team", "http://idp.example/register")
@@ -273,7 +273,7 @@ func TestBackendClientsThatCannotBeBuilt(t *testing.T) {
 // dialer that cannot be built.
 func TestBackendAPIFailures(t *testing.T) {
 	ctx := context.Background()
-	f := startIdP(t)
+	f := startIDP(t)
 	objs := []client.Object{namespace("team"), secret("team", "admin", adminCreds), caConfigMap("team", f), keycloakProvider("team", f)}
 	kc := ref(kindIdentityProvider, "kc")
 
@@ -303,7 +303,7 @@ func TestBackendAPIFailures(t *testing.T) {
 // address the fake listens on, and a nil cache closes the client on release.
 func TestBackendUsesTheEgressPolicy(t *testing.T) {
 	ctx := context.Background()
-	f := startIdP(t)
+	f := startIDP(t)
 	p := keycloakProvider("team", f)
 	p.Spec.ProxyURL = "http://127.0.0.1:3128"
 	c := fakeClient(t, namespace("team"), secret("team", "admin", adminCreds), caConfigMap("team", f), p)
