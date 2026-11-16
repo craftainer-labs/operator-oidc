@@ -95,9 +95,12 @@ func (d *keycloakDriver) create(ctx context.Context, w clientSpec) (binding.Data
 	d.claim.SetExternalID(c.ID)
 	if err := d.persist(ctx); err != nil {
 		// A client the status does not name would be found by no one at deletion:
-		// take it back (a retry makes it again).
-		_ = d.k.Delete(ctx, c.ID)
-		d.claim.SetExternalID("")
+		// take it back. One that cannot be is an orphan risk: the claim keeps its
+		// id, and if the status is not written the retry's create adopts the
+		// client by its marker.
+		if d.takeBack(ctx, func(c2 context.Context) error { return d.k.Delete(c2, c.ID) }) {
+			d.claim.SetExternalID("")
+		}
 		return nil, err
 	}
 	return d.secretData(ctx, w, c.ID)
@@ -208,7 +211,10 @@ func (d *dcrDriver) observe(ctx context.Context, w clientSpec, wantErr error) (l
 		return none, err
 	}
 	info, err := d.d.Get(ctx, st)
-	if errors.Is(err, idpclient.ErrRegistrationLost) && deleting {
+	// A registration the provider no longer honours leaves its state behind
+	// when the claim is being deleted, or never recorded the client (a
+	// withdrawal that could not remove the state): the state goes.
+	if errors.Is(err, idpclient.ErrRegistrationLost) && (deleting || d.claim.GetExternalID() == "") {
 		return none, d.store.Delete(ctx, d.claim)
 	}
 	if err != nil {
@@ -233,18 +239,16 @@ func (d *dcrDriver) register(ctx context.Context, w clientSpec) (idpclient.Info,
 	info, err := d.d.Register(ctx, d.registration(w))
 	if err != nil {
 		if errors.Is(err, idpclient.ErrBadResponse) {
-			d.orphanRisk()
+			d.orphanRisk(reasonRegistrationUnconfirmed)
 		}
 		return info, err
 	}
-	d.clearOrphanRisk()
+	d.clearUnexpectedAnswer()
 	if w.public {
 		info.Secret = ""
 	}
 	if err := d.store.Write(ctx, d.claim, info.State); err != nil {
-		if d.d.Delete(ctx, info.State) != nil {
-			d.orphanRisk()
-		}
+		d.takeBack(ctx, func(c context.Context) error { return d.d.Delete(c, info.State) })
 		return info, err
 	}
 	d.record(info.State)
@@ -253,15 +257,21 @@ func (d *dcrDriver) register(ctx context.Context, w clientSpec) (idpclient.Info,
 
 // withdraw takes back a registration the status could not record, and its
 // state, so a claim deleted afterwards leaves nothing behind. A registration
-// that cannot be deleted is an orphan risk.
+// that cannot be deleted is an orphan risk: the claim keeps its client_id and
+// its state, so that whichever reconcile comes next manages it (and deletes it
+// with the claim). A state that cannot be deleted is reported the same way; the
+// next observe removes it, because its registration is gone.
 func (d *dcrDriver) withdraw(ctx context.Context, st dcr.State) {
-	if err := d.d.Delete(ctx, st); err != nil && !errors.Is(err, idpclient.ErrRegistrationLost) {
-		d.orphanRisk()
+	if !d.takeBack(ctx, func(c context.Context) error { return d.d.Delete(c, st) }) {
 		return
 	}
-	_ = d.store.Delete(ctx, d.claim)
 	d.claim.SetExternalID("")
 	d.claim.Status.RegistrationClientURI = ""
+	c, cancel := detached(ctx)
+	defer cancel()
+	if err := d.store.Delete(c, d.claim); err != nil {
+		d.orphanRisk(reasonCleanupFailed)
+	}
 }
 
 func (d *dcrDriver) create(ctx context.Context, w clientSpec) (binding.Data, error) {
@@ -303,7 +313,7 @@ func (d *dcrDriver) update(ctx context.Context, w clientSpec, cur clientState) (
 func (d *dcrDriver) delete(ctx context.Context, cur clientState) error {
 	// A registration the provider no longer honours is deleted as far as the
 	// operator can tell; the stored state goes either way.
-	if err := d.d.Delete(ctx, cur.reg); err != nil && !errors.Is(err, idpclient.ErrRegistrationLost) {
+	if err := d.d.Delete(ctx, cur.reg); err != nil && !clientGone(err) {
 		return err
 	}
 	return d.store.Delete(ctx, d.claim)
@@ -322,17 +332,28 @@ func (d *dcrDriver) rotateBegin(ctx context.Context, w clientSpec, cur clientSta
 		return nil, err
 	}
 	if err := d.persist(ctx); err != nil {
-		// The new registration is stored and the old one is not deleted: the old
-		// one stays at the provider, with no token the operator still holds.
-		d.orphanRisk()
+		d.rollBack(ctx, info.State, cur.reg)
 		return nil, err
 	}
 	// The new registration is stored and recorded. The old one must not outlive
 	// it; if it cannot be deleted its token is gone, so say it may remain.
-	if err := d.d.Delete(ctx, cur.reg); err != nil && !errors.Is(err, idpclient.ErrRegistrationLost) {
-		d.orphanRisk()
-	}
+	d.takeBack(ctx, func(c context.Context) error { return d.d.Delete(c, cur.reg) })
 	return d.data(info.State.ClientID, info.Secret), nil
+}
+
+// rollBack undoes a rotation whose status could not be written: the status still
+// names the old registration, so the new one is deleted and the old one's state
+// is stored again (the new one's replaced it). A new registration that cannot be
+// deleted is an orphan risk; so is an old state that cannot be restored, which
+// leaves the claim with a state of a registration that is gone.
+func (d *dcrDriver) rollBack(ctx context.Context, made, old dcr.State) {
+	d.takeBack(ctx, func(c context.Context) error { return d.d.Delete(c, made) })
+	c, cancel := detached(ctx)
+	defer cancel()
+	if err := d.store.Write(c, d.claim, old); err != nil {
+		d.orphanRisk(reasonCleanupFailed)
+	}
+	d.record(old)
 }
 
 func (d *dcrDriver) rotateFinish(context.Context) error { return nil }
