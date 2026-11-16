@@ -9,9 +9,11 @@ import (
 	"net/url"
 	"strconv"
 	"sync"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/craftainer-labs/lib-operator-go/pkg/apis/common"
@@ -40,6 +42,20 @@ type Config struct {
 	// Cache keeps the client of each provider between reconciles; nil makes a
 	// client for every use and closes it when the reconcile is over.
 	Cache *ProviderCache
+	// APIReader looks for binding Secrets (lifecycle.Options.APIReader): the
+	// operator's Secret cache holds only the Secrets it labelled. nil uses
+	// Client.
+	APIReader client.Reader
+	// Recorder emits the Events of the OidcClient controller. Required by it.
+	Recorder events.EventRecorder
+	// ManagedBy is the managed-by label of binding and registration Secrets.
+	ManagedBy string
+	// MaxConcurrentReconciles is how many OidcClients reconcile at once; below
+	// 1 means 1.
+	MaxConcurrentReconciles int
+	// Now is the clock of the lifecycle (rotation and grace periods); nil is
+	// time.Now. Tests advance it.
+	Now func() time.Time
 }
 
 // hostDialer is the dialer of a connection to a provider and its proxy.
@@ -98,6 +114,9 @@ type Backend struct {
 	// Conn is the connection settings server.Resolve built: the endpoint, the
 	// admin credentials, the CA bundle and the proxy.
 	Conn server.Connection
+	// Discovery is what the provider's last successful probe found; nil before
+	// one.
+	Discovery *oidcv1alpha1.Discovery
 
 	keycloak func() (Conn, func(), error)
 	dcr      func() (Conn, func(), error)
@@ -155,6 +174,7 @@ type providerObject struct {
 	uid        types.UID
 	generation int64
 	spec       oidcv1alpha1.ProviderConfig
+	discovery  *oidcv1alpha1.Discovery
 }
 
 // fetchProvider reads the provider ref names, which server.Connection does not
@@ -163,11 +183,11 @@ func (c Config) fetchProvider(ctx context.Context, ns string, ref common.ServerR
 	if ref.Kind == kindClusterIdentityProvider {
 		var p oidcv1alpha1.ClusterIdentityProvider
 		err := c.Client.Get(ctx, client.ObjectKey{Name: ref.Name}, &p)
-		return providerObject{p.UID, p.Generation, p.Spec.ProviderConfig}, err
+		return providerObject{p.UID, p.Generation, p.Spec.ProviderConfig, p.Status.Discovery}, err
 	}
 	var p oidcv1alpha1.IdentityProvider
 	err := c.Client.Get(ctx, client.ObjectKey{Namespace: ns, Name: ref.Name}, &p)
-	return providerObject{p.UID, p.Generation, p.Spec.ProviderConfig}, err
+	return providerObject{p.UID, p.Generation, p.Spec.ProviderConfig, p.Status.Discovery}, err
 }
 
 // Backend resolves ref for a claim in ns: the connection settings through
@@ -195,7 +215,7 @@ func (c Config) Backend(ctx context.Context, ns string, ref common.ServerRef) (*
 	if err != nil {
 		return nil, coarse(ctx, "build the dialer", err)
 	}
-	b := &Backend{Spec: obj.spec, Conn: conn}
+	b := &Backend{Spec: obj.spec, Conn: conn, Discovery: obj.discovery}
 	spec := &b.Spec
 	switch spec.Type {
 	case oidcv1alpha1.ProviderKeycloak:

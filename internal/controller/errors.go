@@ -7,6 +7,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/craftainer-labs/lib-operator-go/pkg/egress"
+	"github.com/craftainer-labs/lib-operator-go/pkg/lifecycle"
 	"github.com/craftainer-labs/lib-operator-go/pkg/server"
 
 	"github.com/craftainer-labs/operator-oidc/internal/idpclient"
@@ -19,6 +20,18 @@ var (
 	// ErrInitialAccessToken means initialAccessTokenSecretRef names a Secret
 	// or a key that holds no token.
 	ErrInitialAccessToken = errors.New("initialAccessTokenSecretRef names no token")
+	// ErrInvalidClient means the OidcClient's spec breaks a rule the CRD and
+	// the webhook enforce too (the controller checks again, so a claim that
+	// reached the cluster without admission is refused before anything is made
+	// at the provider).
+	ErrInvalidClient = errors.New("the client's spec is not valid")
+	// ErrScopeNotAllowed means a scope of the client is not in the provider's
+	// allowedScopes.
+	ErrScopeNotAllowed = errors.New("a scope of the client is not allowed by the provider")
+	// ErrBindingNotUsable means the binding Secret does not hold the client's
+	// secret, which the provider will not tell again: the next reconcile finds
+	// the Secret missing and issues a new one through a rotation.
+	ErrBindingNotUsable = errors.New("the binding Secret does not hold the client's secret")
 )
 
 // Keys of the admin Secret of a Keycloak provider.
@@ -61,6 +74,10 @@ func isStatus(err error) bool {
 // credentials are not usable.
 const invalidProvider = "the provider's configuration or credentials are not usable"
 
+// invalidClient is the text of a client the operator cannot send to the
+// provider.
+const invalidClient = "the client cannot be sent to the provider"
+
 // egressRefused is the text of every way the egress policy, or a proxy it
 // checks, refuses a connection.
 const egressRefused = "the connection to the provider was refused by the egress policy"
@@ -69,6 +86,15 @@ const egressRefused = "the connection to the provider was refused by the egress 
 var rules = []rule{
 	{is(ErrAdminCredentials), ""},
 	{is(ErrInitialAccessToken), ""},
+	{is(ErrInvalidClient), ""},
+	{is(ErrScopeNotAllowed), ""},
+	{is(ErrBindingNotUsable), ""},
+	{is(lifecycle.ErrNameCollision), "a client of that name exists and this claim did not make it"},
+	{is(idpclient.ErrUnknownScope), "a scope of the client is not a client scope of the provider's realm"},
+	{is(idpclient.ErrRegistrationLost), "the provider no longer holds the client's registration"},
+	{is(idpclient.ErrInvalidState), "the stored registration is not valid"},
+	{is(idpclient.ErrInvalidSpec), invalidClient},
+	{is(idpclient.ErrInvalidID), invalidClient},
 	{is(server.ErrServerNotFound), "the referenced provider was not found"},
 	{is(server.ErrNamespaceNotAllowed), "the claim's namespace is not allowed by the provider"},
 	{is(server.ErrAdminSecretNamespaceForbidden), "the provider's admin credentials are not usable"},
@@ -108,10 +134,22 @@ func categoryOnly(err error) error {
 			if r.text == "" {
 				return err
 			}
-			return &coarseError{text: r.text, errs: []error{err}}
+			return &coarseError{text: r.text, errs: withReach(err)}
 		}
 	}
-	return &coarseError{text: defaultText, errs: []error{err}}
+	return &coarseError{text: defaultText, errs: withReach(err)}
+}
+
+// withReach returns the errors a coarseError holds for err: err itself, and
+// lifecycle.ErrUnreachable when the provider could not be reached, so a claim
+// shows ServerReachable=False instead of a generic failure.
+func withReach(err error) []error {
+	for _, target := range []error{idpclient.ErrConnPolicy, idpclient.ErrConnTLS, idpclient.ErrConnTimeout, idpclient.ErrConnFailed} {
+		if errors.Is(err, target) {
+			return []error{err, lifecycle.ErrUnreachable}
+		}
+	}
+	return []error{err}
 }
 
 // coarse is categoryOnly for an error that is also logged, with the operation

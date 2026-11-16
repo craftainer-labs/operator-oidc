@@ -1,7 +1,9 @@
 # Installs the Helm chart into a Pod Security `restricted` namespace, with the
 # manager running as an arbitrary UID, then exercises the oidc.craftainer.dev API
 # end to end: the CRDs, their defaults, the webhooks and the providers' health
-# probes (the OidcClient controller comes later). The steps run in order; the
+# probes and the OidcClient controller. There is no Keycloak in the cluster, so the
+# claims here show the failure conditions; the controller's success paths run
+# against a real Keycloak in the Integration workflow. The steps run in order; the
 # cluster is thrown away afterwards.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -199,6 +201,59 @@ spec:
                 grantTypes: [authorization_code]
                 pkce: S256
                 scopes: [openid]
+
+    - name: an OidcClient on a provider that is not usable says so and makes no Secret
+      try:
+        - assert:
+            timeout: 2m
+            resource:
+              apiVersion: oidc.craftainer.dev/v1alpha1
+              kind: OidcClient
+              metadata:
+                name: web
+              status:
+                (conditions[?type == 'Synced'] | [0].status): "False"
+                (conditions[?type == 'Ready'] | [0].status): "False"
+                (type(conditions[?type == 'Synced'] | [0].message) == 'string' && length(conditions[?type == 'Synced'] | [0].message) > `0`): true
+        - script:
+            timeout: 1m
+            content: |
+              set -eu
+              if kubectl get secret web -n "$NAMESPACE" >/dev/null 2>&1; then
+                echo "a binding Secret exists for a client that was never made"
+                exit 1
+              fi
+
+    - name: an OidcClient on a provider that cannot be reached reports it without the address
+      try:
+        - apply:
+            resource:
+              apiVersion: oidc.craftainer.dev/v1alpha1
+              kind: OidcClient
+              metadata:
+                name: down
+              spec:
+                serverRef: {kind: IdentityProvider, name: unreachable}
+                redirectUris: [https://app.example.com/callback]
+        - assert:
+            timeout: 3m
+            resource:
+              apiVersion: oidc.craftainer.dev/v1alpha1
+              kind: OidcClient
+              metadata:
+                name: down
+              status:
+                (conditions[?type == 'Synced'] | [0].reason): ServerUnreachable
+                (conditions[?type == 'Ready'] | [0].status): "False"
+                (conditions[?type == 'ServerReachable'] | [0].status): "False"
+                (contains(to_string(conditions), 'kc.invalid')): false
+                (contains(to_string(conditions), 'hunter2')): false
+                (binding == `null`): true
+        - script:
+            timeout: 1m
+            content: |
+              set -eu
+              kubectl delete oidcclient down -n "$NAMESPACE" --wait=true --timeout=60s
 
     - name: an OidcClient with a bypass-prone redirect URI is rejected
       try:
