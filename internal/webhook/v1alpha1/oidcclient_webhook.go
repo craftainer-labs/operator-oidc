@@ -85,12 +85,12 @@ func (v *OidcClientValidator) providerType(ctx context.Context, obj *oidcv1alpha
 	case "ClusterIdentityProvider":
 		var p oidcv1alpha1.ClusterIdentityProvider
 		if v.Reader.Get(ctx, client.ObjectKey{Name: ref.Name}, &p) == nil {
-			return p.Spec.ProviderConfig.Type
+			return p.Spec.Type
 		}
 	case "IdentityProvider":
 		var p oidcv1alpha1.IdentityProvider
 		if v.Reader.Get(ctx, client.ObjectKey{Namespace: obj.Namespace, Name: ref.Name}, &p) == nil {
-			return p.Spec.ProviderConfig.Type
+			return p.Spec.Type
 		}
 	}
 	return ""

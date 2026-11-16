@@ -346,7 +346,7 @@ func TestKeycloakInvalidSpecIsRefusedAgain(t *testing.T) {
 			}
 			c := o.get()
 			msg := wantCond(t, c, conditions.Synced, metav1.ConditionFalse, "").Message
-			if !strings.Contains(msg, "the client's spec is not valid") && !strings.Contains(msg, "not allowed by the provider") {
+			if !strings.Contains(msg, "the client's spec is not valid") && !strings.Contains(msg, "is not in the provider's allowedScopes") {
 				t.Errorf("message = %q", msg)
 			}
 			f.kc.with(func() {
