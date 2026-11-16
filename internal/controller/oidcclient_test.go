@@ -487,8 +487,14 @@ func TestResolveSpec(t *testing.T) {
 	if _, err := resolveSpec(oidcv1alpha1.OidcClientSpec{RedirectURIs: https, Scopes: []oidcv1alpha1.Scope{"admin"}}, allowed); !errors.Is(err, ErrScopeNotAllowed) {
 		t.Errorf("a scope the provider does not allow: %v", err)
 	}
-	if _, err := resolveSpec(oidcv1alpha1.OidcClientSpec{RedirectURIs: https}, nil); !errors.Is(err, ErrScopeNotAllowed) {
+	// openid is not exempt: a provider that does not list it refuses the default
+	// scope, and the error names it.
+	_, err = resolveSpec(oidcv1alpha1.OidcClientSpec{RedirectURIs: https}, nil)
+	if !errors.Is(err, ErrScopeNotAllowed) || !strings.Contains(err.Error(), `"openid"`) {
 		t.Errorf("a provider that allows no scope: %v", err)
+	}
+	if got := categoryOnly(err); got.Error() != err.Error() || !errors.Is(got, ErrScopeNotAllowed) {
+		t.Errorf("the scope error was not passed through: %v", got)
 	}
 }
 
@@ -652,5 +658,33 @@ func TestRotationFailureIsCoarse(t *testing.T) {
 	_, _, err := x.RotateBegin(context.Background(), oidcv1alpha1.OidcClientSpec{}, clientState{}, lifecycle.RotationState{})
 	if !errors.Is(err, lifecycle.ErrUnreachable) || err.Error() != "the connection to the provider failed" {
 		t.Errorf("rotate: %v", err)
+	}
+}
+
+// webOrigins on a provider that registers clients dynamically are dropped and
+// the claim says so in a condition, which goes away with the webOrigins; a
+// Keycloak client carries them and has no such condition.
+func TestWebOriginsIgnoredCondition(t *testing.T) {
+	origins := func(c *oidcv1alpha1.OidcClient) {
+		c.Spec.WebOrigins = []oidcv1alpha1.WebOrigin{"https://app.example"}
+	}
+	o := dcrOC(t, startDCR(t), interceptor.Funcs{}, origins)
+	o.ok()
+	got := wantCond(t, o.get(), conditionWebOriginsIgnored, metav1.ConditionTrue, reasonWebOriginsIgnored)
+	if got.Message != textWebOriginsIgnored {
+		t.Errorf("message = %q", got.Message)
+	}
+	wantCond(t, o.get(), conditions.Ready, metav1.ConditionTrue, "")
+	o.edit(func(c *oidcv1alpha1.OidcClient) { c.Spec.WebOrigins = nil })
+	o.ok()
+	if c := cond(o.get(), conditionWebOriginsIgnored); c != nil {
+		t.Errorf("the condition stayed: %+v", c)
+	}
+
+	f := startIDP(t)
+	k := newOC(t, interceptor.Funcs{}, with(kcObjects(f), oidcClient(origins))...)
+	k.ok()
+	if c := cond(k.get(), conditionWebOriginsIgnored); c != nil {
+		t.Errorf("a Keycloak client got the condition: %+v", c)
 	}
 }

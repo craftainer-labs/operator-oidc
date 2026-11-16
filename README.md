@@ -132,7 +132,23 @@ a probe found them); never to a status, an Event or a log.
   document the operator cannot use may have made a client it cannot manage: the
   claim gets the condition `RegistrationUnconfirmed` and a Warning Event.
 - **Web origins** are a Keycloak setting: RFC 7591 has no such field, so a
-  dynamically registered client does not carry them.
+  dynamically registered client does not carry them. A claim that sets
+  `webOrigins` on a `DynamicRegistration` provider is admitted, with an
+  admission warning (`spec.webOrigins is ignored: ...`, shown by `kubectl`) and,
+  while it is reconciled, the condition `WebOriginsIgnored=True` with a fixed
+  message. The origins are dropped, not sent. The condition is removed when the
+  claim no longer sets `webOrigins` or its provider is a Keycloak. The webhook
+  reads the provider to warn; when it cannot (the provider does not exist yet),
+  it admits without a warning, and the condition appears at the first reconcile.
+- **`openid` is strict.** A claim's `scopes` default to `openid`, and every scope
+  of a claim, `openid` included, must be listed in the provider's
+  `allowedScopes` (which defaults to `openid`, `profile` and `email`). A provider
+  that sets `allowedScopes` without `openid` therefore refuses every claim that
+  relies on the default scope, or that lists it: the claim gets `Synced=False`
+  with the message `the scope "openid" is not in the provider's allowedScopes`,
+  naming the first scope that is missing. List `openid` in the provider
+  explicitly. On Keycloak `openid` is implicit and is no client scope, so listing
+  it adds none.
 - **Checked twice.** The controller checks the redirect URIs, post-logout redirect
   URIs, web origins and scopes (against `allowedScopes`) again, as the webhook
   does, and refuses a claim that broke them with a fixed text before it contacts
@@ -153,18 +169,130 @@ cloud metadata addresses stay refused in both modes.
 
 ## Install
 
-The operator needs a Kubernetes cluster at 1.33 or newer and
-[cert-manager](https://cert-manager.io/) for its webhook certificates. A release
-publishes three artifacts to the OCI registry (see "Releases" below):
+The operator needs a Kubernetes cluster at 1.33 or newer. Helm and OLM v1 need
+[cert-manager](https://cert-manager.io/) for the webhooks' serving certificate;
+OLM v0 issues its own, so it needs none. A release publishes the Helm chart, an
+OLM bundle, a file-based catalog and the distroless `nonroot` image, signed and
+attested (`release-extras.yml`, see "Releases" below and `docs/TEMPLATE.md`).
+The registry and path come from the repository's `OCI_REGISTRY` variable and the
+release workflow.
 
-- a Helm chart, `helm install operator-oidc oci://<registry>/<path>/operator-oidc --version X.Y.Z -n operator-oidc-system --create-namespace`;
-- an OLM bundle and a file-based catalog, installable with OLM v0 and OLM v1's
-  `ClusterExtension`;
-- the distroless `nonroot` image the chart and bundle run.
+### Helm
 
-The registry and path come from the repository's `OCI_REGISTRY` variable and
-the release workflow. From a checkout, `make deploy` installs the kustomize
-manifests of `config/default`.
+```sh
+helm install operator-oidc oci://<registry>/<path>/operator-oidc \
+  --version X.Y.Z --namespace operator-oidc-system --create-namespace \
+  --set egressMode=allow-private
+```
+
+A released chart pins the manager image by digest. Values worth knowing (the
+schema, `charts/chart/values.schema.json`, rejects a misspelt enum or digest and
+a name in `manager.extraEnv` that the chart sets itself):
+
+| Value | Default | Meaning |
+| --- | --- | --- |
+| `egressMode` | `strict` | `allow-private` is the usual choice when a provider or its proxy is an in-cluster Service or lives on a private address |
+| `global.imageRegistry` | empty | pull the image from a mirror (air-gapped) |
+| `manager.image.digest` | set when released | image by digest; wins over `tag` |
+| `manager.extraEnv` | `[]` | extra environment, rendered after the chart's own (not `POD_NAMESPACE` or `EGRESS_MODE`: the chart sets them, and the schema rejects them here), e.g. `NO_PROXY` or `HTTPS_PROXY` for the Kubernetes API client (the Go client reads them; the operator's own code does not), or `SSL_CERT_FILE` with a bundle mounted through `manager.extraVolumes` and `manager.extraVolumeMounts` |
+| `manager.podSecurityContext`, `manager.securityContext` | restricted | non-root, seccomp `RuntimeDefault`, no privilege escalation, all capabilities dropped, read-only root filesystem; the e2e installs into a `restricted` namespace as an arbitrary UID |
+| `crd.keep` | `true` | keep the CRDs, and with them every claim, when the release is uninstalled |
+
+The operator makes no outbound call except to the Kubernetes API and to the
+providers named by the provider kinds, and it sends no telemetry. A provider's
+proxy and CA bundle belong to the provider object (`spec.proxyURL`,
+`spec.tls.caBundle`), not to the chart.
+
+The CSV therefore declares `features.operators.openshift.io/proxy-aware: "false"`:
+the operator reads no `HTTP(S)_PROXY` (a provider connection takes its proxy from
+`spec.proxyURL`), and the in-cluster Kubernetes API client needs no proxy.
+`disconnected` is `"true"` and the fips, tls-profiles and token-auth features are
+`"false"`.
+
+### OLM
+
+`make bundle` writes the bundle from `config/manifests` (`make bundle-validate`
+checks it offline; `bundle/` is generated and not committed, and the CSV's
+permissions come from `config/rbac/role.yaml`). It supports `AllNamespaces` only,
+pins the manager image by digest and lists it in `spec.relatedImages`. Add the
+released catalog as a `CatalogSource` (OLM v0) or a `ClusterCatalog` (OLM v1) and
+subscribe or create a `ClusterExtension`.
+
+From a checkout, `make deploy` installs the kustomize manifests of
+`config/default`, which also need cert-manager.
+
+## Backup and restore
+
+The operator holds no data of its own: everything it knows is in Kubernetes
+objects and at the identity provider.
+
+| Kept in | What | Back it up with |
+| --- | --- | --- |
+| Kubernetes | the three kinds and their status (`status.externalName`, `status.externalId`, `status.registrationClientUri`, the rotation state), the binding Secrets (`servicebinding.io/oidc`), the providers' admin Secrets, initial access token Secrets and CA bundles, and, for dynamically registered clients, the registration Secrets `dcr-<claim uid>` in the operator namespace | your cluster backup (Velero, GitOps, etcd). Restore the providers and their Secrets first, then the claims |
+| The identity provider | the clients, their secrets and (Keycloak) the realm's client policies | the provider's own backup (for Keycloak, a realm export and its database) |
+
+The operator never copies or restores provider state, and it cannot read a
+secret back from a dynamic registration. What it does on a restore:
+
+- **The ownership proof.** A Keycloak client carries the attribute
+  `craftainer.dev/claim` = `<namespace>/<name>/<claim uid>`. A claim adopts the
+  client of its name only when the marker is its own; a client of that name with
+  another marker (or none) gives `Synced=False`, reason `NameCollision`, and
+  nothing is changed. A restore that gives the claims new UIDs (Velero does)
+  therefore meets `NameCollision` on every client that still exists. Either
+  delete the client in Keycloak (after checking nobody uses it) and let the claim
+  create it again, which issues a new secret and rewrites the binding Secret, or
+  set the attribute to the claim's new UID. A restore that keeps UIDs (etcd) is
+  seamless.
+- **A restore from manifests (GitOps) carries no status.** A claim with no
+  `status.externalId` has made nothing as far as it knows, so on Keycloak it
+  adopts a client carrying its marker or reports `NameCollision`, and on a
+  dynamic registration provider it registers a new client (a new `client_id`),
+  leaving the old registration at the provider; remove that one at the provider.
+  A cluster backup keeps the status only if it includes the status subresource.
+- **Dynamic registration state.** The registration Secret `dcr-<claim uid>`
+  holds the client id, its management URI and the registration access token.
+  A claim whose Secret is gone (or sits under another UID) reports
+  `Synced=False` ("the provider no longer holds the client's registration") and is
+  never registered again by the operator, since that would change the
+  `client_id` its workload was given. Recover by restoring the Secret, or delete
+  the claim (a lost registration does not hold its deletion up) and create it
+  again; remove the old client at the provider if it still exists.
+- **Restoring the provider from an older copy:** a client made after the copy is
+  missing, and the claim is created again with a new secret. A secret rotated
+  since the copy is lost while the binding Secret still holds it; rotate the claim
+  (`craftainer.dev/rotate`) to issue a new one.
+- **Binding Secrets** are rewritten by the operator, so a restore of them is not
+  required. A missing Secret, or one that does not hold the client's secret, is
+  replaced through a rotation, not by reading the secret again.
+- **The rotation grace period:** after a rotation both the previous and the new
+  secret work for `rotationPolicy.gracePeriod`, then the operator removes the
+  previous one. On Keycloak this needs a client policy with the secret-rotation
+  executor in the realm; without one a rotation is a hard cut, and a dynamically
+  registered client has no overlap either (a new client replaces the old one).
+
+`deletionPolicy` does not apply to `OidcClient`: it is a credential kind with no
+`deletionPolicy`. Deleting a claim deletes its client at the provider (a claim
+whose `managementPolicies` lacks `Delete` keeps it).
+
+- A claim that never made a client (`status.externalId` is not set, for example
+  a `NameCollision`) is released without contacting the provider.
+- Otherwise the operator deletes the client it recorded; one that is already gone
+  is a success.
+- Delete the claims before the provider object: with the provider or its admin
+  Secret gone, the claim cannot be cleaned up at the provider: its finalizer
+  stays, and it reports `Synced=False` ("the referenced provider was not found")
+  until the provider object and its Secret are back.
+- Delete the claims before you uninstall the chart, and keep the provider and its
+  admin Secret until the claims are gone: deleting a claim deletes its client, but
+  only while the operator is running and the provider is reachable. Uninstalling
+  the chart removes the operator; with the default `crd.keep=true` it keeps the
+  CRDs, the claims and their clients, and a claim deleted afterwards stays
+  `Terminating` until the operator is installed again. Removing its finalizer by
+  hand releases the claim but leaves its client, with a valid secret, at the
+  provider. Deleting a CRD, or uninstalling with `crd.keep=false`, deletes every
+  claim of that kind: with the operator already gone they stay `Terminating` the
+  same way and the CRD deletion waits for them.
 
 ## Development
 
