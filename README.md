@@ -161,6 +161,53 @@ a probe found them); never to a status, an Event or a log.
   does, and refuses a claim that broke them with a fixed text before it contacts
   the provider.
 
+## Known limits
+
+- **A lost DCR registration is never registered again.** When a
+  `DynamicRegistration` provider no longer honours a registration (it refuses
+  the registration access token with `401` or `403`, or answers `404`), the
+  claim is `Synced=False` and stays so: registering again would change the
+  `client_id` the workload was given. To get a new client, delete the claim
+  and create it again. A claim that is being deleted drops the stored state
+  of such a registration and releases its finalizer.
+- **Rotation without the realm policy is a hard cut.** Keycloak keeps the
+  previous secret valid for the grace period only when the realm has a client
+  policy with the secret-rotation executor. Without it, the previous secret
+  stops working as soon as the new one is issued, and a workload that has not
+  yet read the new binding Secret is refused. Rotation on a
+  `DynamicRegistration` provider is always a hard cut, because it registers a
+  new client and deletes the old one.
+- **`WebOriginsIgnored` can be stale.** The condition is set and removed while
+  the client is reconciled against its provider. While the provider cannot be
+  resolved or built (it does not exist, for example), the condition is
+  neither set nor removed, so it shows the state of
+  the last reconcile that reached the provider.
+- **`CleanupFailed` is sticky.** It is a reason of the
+  `RegistrationUnconfirmed` condition, set when a client the status could not
+  account for could not be deleted. A later good registration clears the other
+  reason of that condition but never this one, and nothing else removes it
+  while the claim exists. Once you have checked at the provider that no stray
+  client remains, delete and recreate the claim to be rid of it.
+- **Double faults leave a client the operator cannot manage.** The operator
+  takes back, on a bounded context of its own, the clients it made and could
+  not record, and it reports the cases it cannot (Warning Event and the
+  `RegistrationUnconfirmed` condition). The cases that need two failures in
+  a row, one of which is a failed write to the cluster, are:
+  - A dynamic registration whose state could not be stored, and whose delete
+    then fails: the operator never held a token it could use again, so the
+    client may remain at the provider and is only reported.
+  - A rotation whose status could not be written, whose new registration then
+    cannot be deleted (reported), or whose old stored state cannot be restored:
+    the claim then names a registration that is gone and reports it lost, as
+    in the first item.
+  - A rotation that stored its new registration but could not delete the old
+    one: the old token is no longer held, so the old client may remain and is
+    only reported.
+  - A Keycloak client that was created but not recorded in the status, and
+    that cannot be deleted: the claim keeps its id, and the next reconcile
+    manages the client (or, if the status is still not written, adopts it by
+    its ownership marker).
+
 ## Settings
 
 | Setting | Flag | Environment | Default |
