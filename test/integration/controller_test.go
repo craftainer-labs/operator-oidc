@@ -113,7 +113,7 @@ func TestOidcClientControllerOnKeycloak(t *testing.T) {
 	t.Cleanup(func() {
 		// Whatever the test left behind.
 		if id, err := clientUUID(clientID); err == nil {
-			_, _, _ = admin(http.MethodDelete, "/"+realm+"/clients/"+id, nil)
+			_, _, _ = must(http.MethodDelete, "/"+realm+"/clients/"+id, nil, 204, 404)
 		}
 	})
 
