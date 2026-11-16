@@ -471,6 +471,9 @@ func TestDCRUpdateWithoutAKnownSecret(t *testing.T) {
 	if _, err := d.rotateBegin(context.Background(), w, clientState{reg: dcr.State{ClientID: "dcr-1"}}); err == nil || cond(d.claim, conditionRegistrationUnconfirmed) == nil {
 		t.Errorf("rotateBegin = %v", err)
 	}
+	if f.saw("DELETE /register/dcr-1") {
+		t.Error("the old registration was deleted before the new one was recorded")
+	}
 	d.persist = func(context.Context) error { return nil }
 	// A rotation whose registration fails is reported.
 	f.with(func() { f.badRegister = true })

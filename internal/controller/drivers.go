@@ -226,7 +226,9 @@ func (d *dcrDriver) observe(ctx context.Context, w clientSpec, wantErr error) (l
 // register registers a new client and stores its registration before anything
 // else. A provider that answers a registration with a document the operator
 // cannot use may still have made the client: that is an orphan risk, recorded
-// in a condition. A registration whose state cannot be stored is withdrawn.
+// in a condition. A registration whose state cannot be stored is withdrawn. The
+// caller writes the status next (persist), because it knows how to take the
+// registration back, or what to leave, when that fails.
 func (d *dcrDriver) register(ctx context.Context, w clientSpec) (idpclient.Info, error) {
 	info, err := d.d.Register(ctx, d.registration(w))
 	if err != nil {
@@ -253,12 +255,13 @@ func (d *dcrDriver) register(ctx context.Context, w clientSpec) (idpclient.Info,
 // state, so a claim deleted afterwards leaves nothing behind. A registration
 // that cannot be deleted is an orphan risk.
 func (d *dcrDriver) withdraw(ctx context.Context, st dcr.State) {
-	if d.d.Delete(ctx, st) != nil {
+	if err := d.d.Delete(ctx, st); err != nil && !errors.Is(err, idpclient.ErrRegistrationLost) {
 		d.orphanRisk()
 		return
 	}
 	_ = d.store.Delete(ctx, d.claim)
 	d.claim.SetExternalID("")
+	d.claim.Status.RegistrationClientURI = ""
 }
 
 func (d *dcrDriver) create(ctx context.Context, w clientSpec) (binding.Data, error) {
