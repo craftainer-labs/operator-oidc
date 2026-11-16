@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -394,24 +395,64 @@ func (e *clientExternal) noteWebOrigins() {
 const (
 	conditionRegistrationUnconfirmed = "RegistrationUnconfirmed"
 	reasonRegistrationUnconfirmed    = "RegistrationUnconfirmed"
-	textRegistrationUnconfirmed      = "the provider answered a registration with an unexpected document; a client may exist that the operator cannot manage"
+	textRegistrationUnconfirmed      = "a client may exist at the provider that the operator cannot manage: its registration was answered with an unexpected document, or it could not be taken back"
 )
+
+// reasonCleanupFailed is the reason of the condition when a client the status
+// cannot account for could not be taken back. Unlike an unexpected answer, a
+// later good registration does not clear it.
+const reasonCleanupFailed = "CleanupFailed"
 
 // orphanRisk records that a client may exist at the provider that the operator
 // cannot manage: its registration was answered with a document the operator
-// cannot use (or could not be withdrawn). The condition goes to the status
-// with the reconcile's own write; nothing but the fixed text is shown.
-func (b *base) orphanRisk() {
+// cannot use, or a client the status cannot account for could not be taken
+// back. The condition goes to the status with the reconcile's own write;
+// nothing but the fixed text is shown.
+func (b *base) orphanRisk(reason string) {
 	meta.SetStatusCondition(b.claim.GetConditions(), metav1.Condition{
 		Type: conditionRegistrationUnconfirmed, Status: metav1.ConditionTrue, ObservedGeneration: b.claim.Generation,
-		Reason: reasonRegistrationUnconfirmed, Message: textRegistrationUnconfirmed,
+		Reason: reason, Message: textRegistrationUnconfirmed,
 	})
-	b.cfg.Recorder.Eventf(b.claim, nil, corev1.EventTypeWarning, reasonRegistrationUnconfirmed, "Register", "%s", textRegistrationUnconfirmed)
+	b.cfg.Recorder.Eventf(b.claim, nil, corev1.EventTypeWarning, reason, "Register", "%s", textRegistrationUnconfirmed)
 }
 
-// clearOrphanRisk drops the condition once a registration is confirmed.
+// clearOrphanRisk drops the condition once the client it was about is
+// confirmed or adopted.
 func (b *base) clearOrphanRisk() {
 	meta.RemoveStatusCondition(b.claim.GetConditions(), conditionRegistrationUnconfirmed)
+}
+
+// clearUnexpectedAnswer drops the condition a good registration answers, and
+// keeps one about a client that could not be taken back.
+func (b *base) clearUnexpectedAnswer() {
+	if c := meta.FindStatusCondition(*b.claim.GetConditions(), conditionRegistrationUnconfirmed); c != nil && c.Reason == reasonRegistrationUnconfirmed {
+		b.clearOrphanRisk()
+	}
+}
+
+// compensateTimeout bounds a compensating call. It runs on a context detached
+// from the reconcile's: the reconcile may have been cancelled, and the client it
+// made must still be taken back.
+const compensateTimeout = 15 * time.Second
+
+// detached is a short context for cleanup that has to outlive the reconcile's
+// own, which keeps its values (logger) but not its cancellation.
+func detached(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), compensateTimeout)
+}
+
+// takeBack runs a compensating delete of a client or registration the status
+// cannot account for, on a detached context. It reports whether the client is
+// gone: a provider that no longer knows it counts as gone. Any other failure is
+// an orphan risk (condition and Warning event), and the next reconcile retries.
+func (b *base) takeBack(ctx context.Context, del func(context.Context) error) bool {
+	ctx, cancel := detached(ctx)
+	defer cancel()
+	if err := del(ctx); err != nil && !clientGone(err) {
+		b.orphanRisk(reasonCleanupFailed)
+		return false
+	}
+	return true
 }
 
 // serverRefIndex indexes OidcClients by the provider they name, as kind/name.
@@ -478,5 +519,8 @@ func (r *ClientReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // errLost is what a claim whose registration state is gone gets.
 func errLost() error { return fmt.Errorf("%w: no stored registration", idpclient.ErrRegistrationLost) }
 
-// clientGone reports a client or registration the provider does not know.
-func clientGone(err error) bool { return errors.Is(err, idpclient.ErrNotFound) }
+// clientGone reports a client or registration the provider does not know: a
+// client that is not found, or a registration whose token it no longer honours.
+func clientGone(err error) bool {
+	return errors.Is(err, idpclient.ErrNotFound) || errors.Is(err, idpclient.ErrRegistrationLost)
+}

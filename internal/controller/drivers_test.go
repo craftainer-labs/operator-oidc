@@ -466,9 +466,10 @@ func TestDCRUpdateWithoutAKnownSecret(t *testing.T) {
 	if cond(d.claim, conditionRegistrationUnconfirmed) == nil {
 		t.Error("an undeletable registration is an orphan risk")
 	}
-	// A rotation whose status cannot be written leaves the old registration.
+	// A rotation whose status cannot be written takes the new registration back
+	// and leaves the old one.
 	d.claim.Status.Conditions = nil
-	if _, err := d.rotateBegin(context.Background(), w, clientState{reg: dcr.State{ClientID: "dcr-1"}}); err == nil || cond(d.claim, conditionRegistrationUnconfirmed) == nil {
+	if _, err := d.rotateBegin(context.Background(), w, clientState{reg: dcr.State{ClientID: "dcr-1"}}); err == nil || cond(d.claim, conditionRegistrationUnconfirmed) != nil {
 		t.Errorf("rotateBegin = %v", err)
 	}
 	if f.saw("DELETE /register/dcr-1") {
