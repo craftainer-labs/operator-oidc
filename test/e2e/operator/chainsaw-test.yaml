@@ -286,9 +286,11 @@ spec:
               YAML
               )
               echo "$out"
+              warned=0
+              echo "$out" | grep -q 'Warning: spec.webOrigins is ignored' || warned=1
               kubectl delete oidcclient dcr-web -n "$NAMESPACE" --wait=true --timeout=60s
               kubectl delete identityprovider dcr -n "$NAMESPACE" --wait=true --timeout=60s
-              echo "$out" | grep -q 'Warning: spec.webOrigins is ignored'
+              test "$warned" = 0
 
     - name: an OidcClient with a bypass-prone redirect URI is rejected
       try:

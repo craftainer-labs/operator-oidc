@@ -89,10 +89,6 @@ func (r *ClientReconciler) external(_ context.Context, be *Backend, c *oidcv1alp
 	x := &clientExternal{claim: c}
 	x.want, x.wantErr = resolveSpec(c.Spec, be.Spec.AllowedScopes)
 	x.webOriginsDropped = be.Spec.Type != oidcv1alpha1.ProviderKeycloak && len(c.Spec.WebOrigins) > 0
-	// Set before the client can fail to build, so the condition follows the spec
-	// even while the provider is not usable; Observe sets it again, because the
-	// finalizer patch of the first reconcile replaces the claim.
-	x.noteWebOrigins()
 	switch be.Spec.Type {
 	case oidcv1alpha1.ProviderKeycloak:
 		k, err := be.Keycloak()

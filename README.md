@@ -139,7 +139,9 @@ a probe found them); never to a status, an Event or a log.
   message. The origins are dropped, not sent. The condition is removed when the
   claim no longer sets `webOrigins` or its provider is a Keycloak. The webhook
   reads the provider to warn; when it cannot (the provider does not exist yet),
-  it admits without a warning, and the condition appears at the first reconcile.
+  it admits without a warning, and the condition appears at the first reconcile
+  that reaches the provider's client (a provider that cannot be resolved or
+  built shows it once it can).
 - **`openid` is strict.** A claim's `scopes` default to `openid`, and every scope
   of a claim, `openid` included, must be listed in the provider's
   `allowedScopes` (which defaults to `openid`, `profile` and `email`). A provider
