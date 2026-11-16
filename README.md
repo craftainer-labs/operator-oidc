@@ -165,16 +165,21 @@ a probe found them); never to a status, an Event or a log.
 
 - **A lost DCR registration is never registered again.** When a
   `DynamicRegistration` provider no longer honours a registration (it refuses
-  the registration access token with `401` or `403`, or answers `404`), the
+  the registration access token with `401` or `403`, or answers `404`), or the
+  stored `dcr-<claim uid>` Secret of a claim that has a `client_id` is gone, the
   claim is `Synced=False` and stays so: registering again would change the
   `client_id` the workload was given. To get a new client, delete the claim
-  and create it again. A claim that is being deleted drops the stored state
-  of such a registration and releases its finalizer.
+  and create it again. When the claim is deleted, and its provider can be
+  resolved, the stored state of such a registration is dropped and the
+  finalizer released; a claim whose provider is gone cannot be released that
+  way.
 - **Rotation without the realm policy is a hard cut.** Keycloak keeps the
   previous secret valid for the grace period only when the realm has a client
-  policy with the secret-rotation executor. Without it, the previous secret
-  stops working as soon as the new one is issued, and a workload that has not
-  yet read the new binding Secret is refused. Rotation on a
+  policy with the secret-rotation executor. Without it (the operator sees that
+  when it rotates), the previous secret stops working as soon as the new one is
+  issued, and a workload that has not yet read the new binding Secret is
+  refused. A rotation that the operator adopts after a crash, without having
+  issued it, is assumed to have kept the grace period. Rotation on a
   `DynamicRegistration` provider is always a hard cut, because it registers a
   new client and deletes the old one.
 - **`WebOriginsIgnored` can be stale.** The condition is set and removed while
@@ -183,26 +188,31 @@ a probe found them); never to a status, an Event or a log.
   neither set nor removed, so it shows the state of
   the last reconcile that reached the provider.
 - **`CleanupFailed` is sticky.** It is a reason of the
-  `RegistrationUnconfirmed` condition, set when a client the status could not
-  account for could not be deleted. A later good registration clears the other
-  reason of that condition but never this one, and nothing else removes it
-  while the claim exists. Once you have checked at the provider that no stray
-  client remains, delete and recreate the claim to be rid of it.
+  `RegistrationUnconfirmed` condition, set when the operator could not take
+  back a client the status could not account for, or could not delete or
+  restore a stored registration state. A later good registration clears the
+  other reason of that condition but never this one, and nothing else removes
+  it while the claim exists, even after a later reconcile has put right what
+  failed (for example removed a stale state). Check at the provider that no
+  stray client remains; delete and recreate the claim to be rid of the
+  condition.
 - **Double faults leave a client the operator cannot manage.** The operator
   takes back, on a bounded context of its own, the clients it made and could
   not record, and it reports the cases it cannot (Warning Event and the
-  `RegistrationUnconfirmed` condition). The cases that need two failures in
-  a row, one of which is a failed write to the cluster, are:
+  `RegistrationUnconfirmed` condition). These cases need a provider call and a
+  second call to fail, and are reported rather than repaired:
   - A dynamic registration whose state could not be stored, and whose delete
     then fails: the operator never held a token it could use again, so the
-    client may remain at the provider and is only reported.
-  - A rotation whose status could not be written, whose new registration then
-    cannot be deleted (reported), or whose old stored state cannot be restored:
-    the claim then names a registration that is gone and reports it lost, as
-    in the first item.
+    client may remain at the provider.
+  - A rotation whose status could not be written (the new registration is
+    deleted again, and the old state restored). If that delete fails, the new
+    client may remain at the provider and the claim keeps the old one. If the
+    old state cannot be restored, the old client is still live at the
+    provider (its binding Secret still holds its credentials) but its token is
+    gone: the claim reports a lost registration, as in the first item, and the
+    old client is not reported separately.
   - A rotation that stored its new registration but could not delete the old
-    one: the old token is no longer held, so the old client may remain and is
-    only reported.
+    one: the old token is no longer held, so the old client may remain.
   - A Keycloak client that was created but not recorded in the status, and
     that cannot be deleted: the claim keeps its id, and the next reconcile
     manages the client (or, if the status is still not written, adopts it by
