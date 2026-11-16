@@ -8,6 +8,9 @@ import (
 	. "github.com/onsi/gomega"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"github.com/craftainer-labs/lib-operator-go/pkg/apis/common"
 	oidcv1alpha1 "github.com/craftainer-labs/operator-oidc/api/v1alpha1"
@@ -269,6 +272,63 @@ func TestOidcClientValidator(t *testing.T) {
 	g.Expect(err).To(HaveOccurred())
 	_, err = v.ValidateDelete(ctx, oidcClient(false, "javascript:alert(1)"))
 	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// A client that sets webOrigins on a provider that registers clients dynamically
+// is admitted with a warning (the controller drops them); a Keycloak provider, an
+// unknown or missing provider, or no webOrigins give none.
+func TestOidcClientWebOriginsWarning(t *testing.T) {
+	g := NewWithT(t)
+	scheme := runtime.NewScheme()
+	g.Expect(oidcv1alpha1.AddToScheme(scheme)).To(Succeed())
+	dyn := dynamicConfig(goodIssuer, "https://sso.example.com/register")
+	dcrNamespaced := identityProvider(dyn, "")
+	dcrNamespaced.Name = "dcr"
+	dcrCluster := clusterIdentityProvider(dyn, "")
+	dcrCluster.Name = "dcr-cluster"
+	kc := identityProvider(providerConfig(goodIssuer, goodBase), "")
+	reader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dcrNamespaced, dcrCluster, kc).Build()
+	ctx := context.Background()
+
+	claim := func(kind, name string, origins ...oidcv1alpha1.WebOrigin) *oidcv1alpha1.OidcClient {
+		c := oidcClient(false, "https://ok.example.com/cb")
+		c.Spec.ServerRef = common.ServerRef{Kind: kind, Name: name}
+		c.Spec.WebOrigins = origins
+		return c
+	}
+	origin := oidcv1alpha1.WebOrigin("https://ok.example.com")
+	v := &OidcClientValidator{Reader: reader}
+	for name, tc := range map[string]struct {
+		v    *OidcClientValidator
+		c    *oidcv1alpha1.OidcClient
+		warn bool
+	}{
+		"namespaced dynamic provider": {v, claim("IdentityProvider", "dcr", origin), true},
+		"cluster dynamic provider":    {v, claim("ClusterIdentityProvider", "dcr-cluster", origin), true},
+		"no web origins":              {v, claim("IdentityProvider", "dcr"), false},
+		"keycloak provider":           {v, claim("IdentityProvider", "keycloak", origin), false},
+		"missing provider":            {v, claim("IdentityProvider", "absent", origin), false},
+		"missing cluster provider":    {v, claim("ClusterIdentityProvider", "absent", origin), false},
+		"unknown kind":                {v, claim("Other", "dcr", origin), false},
+		"no reader":                   {&OidcClientValidator{}, claim("IdentityProvider", "dcr", origin), false},
+	} {
+		warnings, err := tc.v.ValidateCreate(ctx, tc.c)
+		g.Expect(err).NotTo(HaveOccurred(), name)
+		if tc.warn {
+			g.Expect(warnings).To(Equal(admission.Warnings{WebOriginsIgnoredWarning}), name)
+		} else {
+			g.Expect(warnings).To(BeEmpty(), name)
+		}
+	}
+	warnings, err := v.ValidateUpdate(ctx, claim("IdentityProvider", "dcr"), claim("IdentityProvider", "dcr", origin))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(warnings).To(ConsistOf(WebOriginsIgnoredWarning))
+
+	// A claim that is refused has no warning: its error is what matters.
+	bad := claim("IdentityProvider", "dcr", "https://ok.example.com/path")
+	warnings, err = v.ValidateCreate(ctx, bad)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(warnings).To(BeEmpty())
 }
 
 // An admission error never echoes a redirect URI: it can hold a token.

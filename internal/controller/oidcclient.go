@@ -88,6 +88,7 @@ func (r *ClientReconciler) external(_ context.Context, be *Backend, c *oidcv1alp
 	b.persist = func(ctx context.Context) error { return r.Client.Status().Update(ctx, c) }
 	x := &clientExternal{claim: c}
 	x.want, x.wantErr = resolveSpec(c.Spec, be.Spec.AllowedScopes)
+	x.webOriginsDropped = be.Spec.Type != oidcv1alpha1.ProviderKeycloak && len(c.Spec.WebOrigins) > 0
 	switch be.Spec.Type {
 	case oidcv1alpha1.ProviderKeycloak:
 		k, err := be.Keycloak()
@@ -183,11 +184,23 @@ func resolveSpec(spec oidcv1alpha1.OidcClientSpec, allowed []oidcv1alpha1.Scope)
 	}
 	for _, s := range w.scopes {
 		if !slices.Contains(allowed, oidcv1alpha1.Scope(s)) {
-			return w, ErrScopeNotAllowed
+			return w, &scopeNotAllowedError{scope: s}
 		}
 	}
 	return w, nil
 }
+
+// scopeNotAllowedError is ErrScopeNotAllowed with the scope that is missing from
+// the provider's allowedScopes. A scope name is not sensitive (the CRD limits it
+// to printable ASCII without a space or a quote), and naming it is what tells
+// the author what to fix: `openid` is not allowed unless the provider lists it.
+type scopeNotAllowedError struct{ scope string }
+
+func (e *scopeNotAllowedError) Error() string {
+	return fmt.Sprintf("the scope %q is not in the provider's allowedScopes", e.scope)
+}
+
+func (e *scopeNotAllowedError) Unwrap() error { return ErrScopeNotAllowed }
 
 // clientState is what Observe read of the client at the provider: Keycloak's
 // own representation, or the stored registration of a dynamically registered
@@ -217,6 +230,9 @@ type clientExternal struct {
 	name    string
 	want    clientSpec
 	wantErr error
+	// webOriginsDropped says the claim sets webOrigins and its provider
+	// registers clients dynamically, which has no field for them.
+	webOriginsDropped bool
 }
 
 var (
@@ -231,6 +247,7 @@ func (e *clientExternal) Observe(ctx context.Context, _ oidcv1alpha1.OidcClientS
 	// Reconcile adds the finalizer with a patch that replaces the claim with
 	// the server's copy, which loses a name set before it; set it again here.
 	e.claim.SetExternalName(e.name)
+	e.noteWebOrigins()
 	obs, err := e.drv.observe(ctx, e.want, e.wantErr)
 	return obs, coarse(ctx, "observe", err)
 }
@@ -347,6 +364,29 @@ func (b *base) currentSecret(ctx context.Context) (string, error) {
 		return "", nil
 	}
 	return string(s.Data["clientSecret"]), err
+}
+
+// The condition that says the claim's webOrigins are not used: a provider that
+// registers clients dynamically has no field for them (RFC 7591). It is True
+// while the claim sets webOrigins on such a provider and is removed otherwise.
+const (
+	conditionWebOriginsIgnored = "WebOriginsIgnored"
+	reasonWebOriginsIgnored    = "WebOriginsIgnored"
+	textWebOriginsIgnored      = "spec.webOrigins is ignored: the provider registers clients by dynamic registration, which has no web origins field"
+)
+
+// noteWebOrigins sets the WebOriginsIgnored condition, or removes it when it no
+// longer applies. The condition goes to the status with the reconcile's own
+// write.
+func (e *clientExternal) noteWebOrigins() {
+	if !e.webOriginsDropped {
+		meta.RemoveStatusCondition(e.claim.GetConditions(), conditionWebOriginsIgnored)
+		return
+	}
+	meta.SetStatusCondition(e.claim.GetConditions(), metav1.Condition{
+		Type: conditionWebOriginsIgnored, Status: metav1.ConditionTrue, ObservedGeneration: e.claim.Generation,
+		Reason: reasonWebOriginsIgnored, Message: textWebOriginsIgnored,
+	})
 }
 
 // The condition that says a registration may exist at the provider that the

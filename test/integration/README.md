@@ -1,6 +1,7 @@
 # test/integration/
 
-Go tests of the operator's backend clients (`internal/idpclient`) against a
+Go tests of the operator's backend clients (`internal/idpclient`) and of its
+`OidcClient` controller against a
 real Keycloak 26.7.4 with TLS on and the preview feature
 `client-secret-rotation`, behind the build tag `integration` so `go test ./...`
 and the 100% coverage gate of `make test` never see them. The unit suites use
@@ -30,6 +31,10 @@ fakes only claim:
 
 Files:
 
+- `controller_test.go` — the `OidcClient` controller (`internal/controller`) over a
+  fake Kubernetes API server and the same real Keycloak: an `OidcClient` becomes
+  `Ready`, its binding Secret holds the client id and the secret Keycloak knows,
+  and deleting the claim removes the client from Keycloak.
 - `keycloak_test.go` — the setup (a realm `operator-it` with a client policy
   that rotates the secret of every confidential client, and the operator's
   service account `operator` with the realm-management roles `manage-clients`
