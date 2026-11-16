@@ -132,8 +132,10 @@ a probe found them); never to a status, an Event or a log.
   document the operator cannot use may have made a client it cannot manage: the
   claim gets the condition `RegistrationUnconfirmed` and a Warning Event. So
   does a client (on either kind of provider) that the status could not record
-  and the operator could not delete again, with the reason `CleanupFailed`; the
-  next reconcile retries it.
+  and the operator could not delete again, with the reason `CleanupFailed`. The
+  claim keeps such a client's id, so the next reconcile manages it; a client
+  whose token is no longer held (the old registration of a rotation, or a
+  registration whose state could not be stored) is only reported.
 - **Web origins** are a Keycloak setting: RFC 7591 has no such field, so a
   dynamically registered client does not carry them. A claim that sets
   `webOrigins` on a `DynamicRegistration` provider is admitted, with an

@@ -115,9 +115,9 @@ func TestDCRCompensationToleratesALostRegistration(t *testing.T) {
 	}
 }
 
-// A withdrawal that cannot delete the registration keeps its state, reports an
-// orphan risk with an Event, and the next observe adopts the registration,
-// which settles the risk.
+// A withdrawal that cannot delete the registration keeps its state and the
+// claim's client_id, and reports an orphan risk with an Event: the registration
+// stays accounted for, and the next observe manages it.
 func TestDCRWithdrawThatCannotDeleteIsRetried(t *testing.T) {
 	f := startDCR(t)
 	f.with(func() { f.fail["DELETE /register/dcr-1"] = 500 })
@@ -137,8 +137,8 @@ func TestDCRWithdrawThatCannotDeleteIsRetried(t *testing.T) {
 	if err != nil || !obs.Exists || obs.Current.reg.ClientID != "dcr-1" {
 		t.Fatalf("observe = %+v, %v", obs, err)
 	}
-	if cond(d.claim, conditionRegistrationUnconfirmed) != nil || d.claim.GetExternalID() != "dcr-1" {
-		t.Error("the adopted registration left the risk or was not recorded")
+	if d.claim.GetExternalID() != "dcr-1" {
+		t.Error("the registration is not recorded")
 	}
 }
 
@@ -276,8 +276,8 @@ func TestDCRGoodRegistrationClearsOnlyTheRiskOfAnAnswer(t *testing.T) {
 }
 
 // A Keycloak client the status cannot record is deleted on a cancelled context
-// too; one that cannot be deleted is an orphan risk with an Event, and the retry
-// adopts it, which settles the risk.
+// too; one that cannot be deleted is an orphan risk with an Event, and stays
+// recorded in the claim; the retry adopts it by its marker.
 func TestKeycloakCreateCompensation(t *testing.T) {
 	f := startIDP(t)
 	o := newOC(t, interceptor.Funcs{}, with(kcObjects(f), oidcClient())...)
@@ -299,16 +299,16 @@ func TestKeycloakCreateCompensation(t *testing.T) {
 		t.Fatal("a failing status write was ignored")
 	}
 	wantCond(t, d.claim, conditionRegistrationUnconfirmed, metav1.ConditionTrue, reasonCleanupFailed)
-	if !o.rec.has("Warning " + reasonCleanupFailed) {
-		t.Errorf("events = %v", o.rec.events)
+	if !o.rec.has("Warning "+reasonCleanupFailed) || d.claim.GetExternalID() != "kc-2" {
+		t.Errorf("events = %v, id = %q", o.rec.events, d.claim.GetExternalID())
 	}
 	f.kc.failing("DELETE /clients/kc-2", 0)
 	d.persist = func(context.Context) error { return nil }
 	if _, err := d.create(context.Background(), w); err != nil {
 		t.Fatalf("the retry = %v", err)
 	}
-	if cond(d.claim, conditionRegistrationUnconfirmed) != nil {
-		t.Error("the adopted client left the risk")
+	if d.claim.GetExternalID() != "kc-2" {
+		t.Errorf("the retry did not adopt the client: %q", d.claim.GetExternalID())
 	}
 }
 

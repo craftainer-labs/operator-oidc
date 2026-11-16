@@ -95,13 +95,14 @@ func (d *keycloakDriver) create(ctx context.Context, w clientSpec) (binding.Data
 	d.claim.SetExternalID(c.ID)
 	if err := d.persist(ctx); err != nil {
 		// A client the status does not name would be found by no one at deletion:
-		// take it back. One that cannot be is an orphan risk; the retry's create
-		// adopts it, by its marker.
-		d.takeBack(ctx, func(c2 context.Context) error { return d.k.Delete(c2, c.ID) })
-		d.claim.SetExternalID("")
+		// take it back. One that cannot be is an orphan risk: the claim keeps its
+		// id, and if the status is not written the retry's create adopts the
+		// client by its marker.
+		if d.takeBack(ctx, func(c2 context.Context) error { return d.k.Delete(c2, c.ID) }) {
+			d.claim.SetExternalID("")
+		}
 		return nil, err
 	}
-	d.clearOrphanRisk()
 	return d.secretData(ctx, w, c.ID)
 }
 
@@ -222,11 +223,6 @@ func (d *dcrDriver) observe(ctx context.Context, w clientSpec, wantErr error) (l
 	if err := d.save(ctx, st, info.State); err != nil {
 		return none, err
 	}
-	if d.claim.GetExternalID() == "" {
-		// A registration kept by a withdrawal that could not delete it: the
-		// claim adopts it, which settles the risk that withdrawal reported.
-		d.clearOrphanRisk()
-	}
 	d.record(info.State)
 	return lifecycle.Observation[clientState]{
 		Exists: true, UpToDate: wantErr == nil && info.Registration.Satisfies(d.registration(w)), Current: clientState{reg: info.State},
@@ -261,15 +257,16 @@ func (d *dcrDriver) register(ctx context.Context, w clientSpec) (idpclient.Info,
 
 // withdraw takes back a registration the status could not record, and its
 // state, so a claim deleted afterwards leaves nothing behind. A registration
-// that cannot be deleted is an orphan risk and keeps its state, which the next
-// reconcile adopts. A state that cannot be deleted is reported the same way:
-// the next observe removes it, because the claim records no client.
+// that cannot be deleted is an orphan risk: the claim keeps its client_id and
+// its state, so that whichever reconcile comes next manages it (and deletes it
+// with the claim). A state that cannot be deleted is reported the same way; the
+// next observe removes it, because its registration is gone.
 func (d *dcrDriver) withdraw(ctx context.Context, st dcr.State) {
-	d.claim.SetExternalID("")
-	d.claim.Status.RegistrationClientURI = ""
 	if !d.takeBack(ctx, func(c context.Context) error { return d.d.Delete(c, st) }) {
 		return
 	}
+	d.claim.SetExternalID("")
+	d.claim.Status.RegistrationClientURI = ""
 	c, cancel := detached(ctx)
 	defer cancel()
 	if err := d.store.Delete(c, d.claim); err != nil {
