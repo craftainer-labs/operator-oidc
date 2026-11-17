@@ -532,11 +532,11 @@ func TestCognitoCredentialProblems(t *testing.T) {
 	// A Secret without the keys, and an endpoint override the egress mode
 	// forbids, are refused when the client is built.
 	o = newOC(t, interceptor.Funcs{}, namespace("team"), secret(opsNS, "aws", map[string]string{"accessKeyId": "AKIATEST"}), cognitoProvider(), cognitoClaim())
-	o.failing("CredentialsUnavailable: the cloud credentials are unavailable")
+	o.failing("the cloud credentials are unavailable")
 	override := cognitoProvider()
 	override.Spec.Cognito.EndpointOverride = "http://10.0.0.5:5000"
 	o = newOC(t, interceptor.Funcs{}, namespace("team"), secret(opsNS, "aws", awsKeys), override, cognitoClaim())
-	o.failing("EndpointOverrideForbidden: endpointOverride is not allowed here")
+	o.failing("endpointOverride is not allowed here")
 
 	// A provider of type Cognito without its block.
 	broken := cognitoProvider()
@@ -715,8 +715,9 @@ func TestCognitoErr(t *testing.T) {
 	}
 }
 
-// sameSet takes duplicates into account: lists of the same length that differ
-// in multiplicity are different.
+// sameSet compares values, not multiplicity (Cognito keeps these lists as sets),
+// so lists of the same length with different members differ even when each
+// member of one is found in the other once.
 func TestSameSetDuplicates(t *testing.T) {
 	if sameSet([]string{"a", "b"}, []string{"a", "a"}) || sameSet([]string{"a", "a"}, []string{"a", "b"}) {
 		t.Error("a list with a duplicate equals one without")

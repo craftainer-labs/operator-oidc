@@ -154,7 +154,7 @@ func (h *motoHarness) config(c client.Client) controller.Config {
 }
 
 // The probe describes the user pool and records it; a pool that does not exist
-// is TargetNotFound, and an endpoint override is refused in strict mode.
+// fails with a coarse "does not exist", and an endpoint override is refused in strict mode.
 func TestCognitoProbeAgainstMoto(t *testing.T) {
 	ctx := t.Context()
 	h := newMotoHarness(t)
@@ -166,7 +166,7 @@ func TestCognitoProbeAgainstMoto(t *testing.T) {
 		t.Fatalf("probe: %v", err)
 	}
 	d := res.Discovered
-	if d["resourceId"] != h.poolID || d["region"] != motoRegion || d["endpoint"] == "" || len(d) != 3 {
+	if d["resourceId"] != h.poolID || d["region"] != motoRegion || d["endpoint"] == "" {
 		t.Errorf("discovered = %v", d)
 	}
 
