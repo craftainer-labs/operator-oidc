@@ -6,7 +6,7 @@ toolchain go1.27.4
 
 require (
 	github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider v1.77.0
-	github.com/craftainer-labs/lib-operator-go v0.5.0
+	github.com/craftainer-labs/lib-operator-go v0.6.0
 	github.com/onsi/ginkgo/v2 v2.34.0
 	github.com/onsi/gomega v1.44.0
 	k8s.io/api v0.37.0
