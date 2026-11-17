@@ -137,9 +137,10 @@ func TestEntraFactoryError(t *testing.T) {
 // on one TLS server; the derived endpoints follow an endpointOverride.
 func TestNewGraphAgainstAFakeAuthority(t *testing.T) {
 	ctx := context.Background()
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var srv *httptest.Server
+	srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		base := "https://" + r.Host + "/" + testTenant
+		base := srv.URL + "/" + testTenant
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/.well-known/openid-configuration"):
 			_, _ = io.WriteString(w, `{"issuer":"`+base+`/v2.0","authorization_endpoint":"`+base+`/oauth2/v2.0/authorize","token_endpoint":"`+base+`/oauth2/v2.0/token"}`)

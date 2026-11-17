@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strings"
 )
 
 // Microsoft Graph (v1.0) application registrations, over net/http: five stable
@@ -87,7 +88,10 @@ func NewGraph(hc *http.Client, base string, token GraphToken) (*Graph, error) {
 	if hc == nil || token == nil {
 		return nil, ErrNoCredentials
 	}
-	return &Graph{conn: &conn{hc: hc}, base: u.JoinPath("v1.0"), token: token}, nil
+	// An explicit slash: JoinPath of a URL with no path would give a relative one.
+	b := *u
+	b.Path, b.RawPath = strings.TrimSuffix(u.Path, "/")+"/v1.0", ""
+	return &Graph{conn: &conn{hc: hc}, base: &b, token: token}, nil
 }
 
 // do sends a request to the path below v1.0 and returns the answer when its
@@ -106,7 +110,7 @@ func (g *Graph) do(ctx context.Context, op, method string, query url.Values, bod
 		rq.body = mustJSON(body)
 		rq.contentType = jsonType
 	}
-	r, err := g.conn.send(ctx, op, rq)
+	r, err := g.send(ctx, op, rq)
 	if err != nil {
 		return nil, err
 	}
@@ -187,7 +191,7 @@ func (w graphApp) app() (GraphApp, error) {
 		if !guid.MatchString(c.KeyID) {
 			return GraphApp{}, ErrBadResponse
 		}
-		a.Passwords = append(a.Passwords, GraphPassword{KeyID: c.KeyID, DisplayName: c.DisplayName})
+		a.Passwords = append(a.Passwords, GraphPassword(c))
 	}
 	return a, nil
 }
