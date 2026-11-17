@@ -29,8 +29,8 @@ fakes only claim:
   category, the egress policy refuses the loopback address, and no error text
   holds the address or a secret.
 
-The Cognito backend has its own lane (below): build tags `integration` and
-`cognito`, so it stays out of the Keycloak job's package.
+The Cognito backend has its own package and lane (below): `cognito/`, build tags
+`integration` and `cognito`.
 
 Files:
 
@@ -56,7 +56,7 @@ Files:
 
 ## Cognito (moto)
 
-`cognito_test.go` (build tags `integration` and `cognito`) runs the Cognito
+`cognito/cognito_test.go` (its own package, because the Keycloak tests of this one need a Keycloak in `TestMain`; build tags `integration` and `cognito`) runs the Cognito
 backend (`internal/controller`) against [moto](https://github.com/getmoto/moto)
 server 5.2.5, pinned by digest in `integration.yml`. It reads `MOTO_ENDPOINT`
 (required, `http://<private ip>:5000`) and needs no other service:
@@ -82,7 +82,7 @@ multi-secret calls (`AddUserPoolClientSecret` and the like are not in moto
 `pkg/egress` blocks.
 
 ```sh
-MOTO_ENDPOINT=http://<moto ip>:5000 go test -tags integration,cognito -count=1 -run Cognito ./test/integration/...
+MOTO_ENDPOINT=http://<moto ip>:5000 go test -tags integration,cognito -count=1 ./test/integration/cognito/...
 ```
 
 ## Running

@@ -153,8 +153,9 @@ jobs:
           go-version-file: go.mod
           cache: false
 
-      # The build tags integration and cognito keep these tests out of the
-      # Keycloak job's package and of `go test ./...`.
+      # The tests are their own package (test/integration/cognito): the
+      # Keycloak tests of test/integration need a Keycloak in TestMain. The build
+      # tags integration and cognito keep them out of `go test ./...`.
       - name: Install golangci-lint
         run: |
           set -euo pipefail
@@ -169,7 +170,7 @@ jobs:
           echo "$tmp/$dir" >> "$GITHUB_PATH"
 
       - name: Lint the Cognito integration tests
-        run: golangci-lint run --build-tags integration,cognito ./test/integration/...
+        run: golangci-lint run --build-tags integration,cognito ./test/integration/cognito/...
 
       # moto is reached at its address on the default bridge network (a private
       # range), never at loopback: pkg/egress blocks loopback in both modes.
@@ -193,7 +194,7 @@ jobs:
         run: |
           set -euo pipefail
           export MOTO_ENDPOINT="http://$MOTO_IP:5000"
-          go test -tags integration,cognito -race -count=1 -v -run 'Cognito' ./test/integration/...
+          go test -tags integration,cognito -race -count=1 -v ./test/integration/cognito/...
 
       - name: Show the container log
         if: failure()

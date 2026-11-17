@@ -1,6 +1,6 @@
 //go:build integration && cognito
 
-package integration
+package cognito
 
 // The Cognito backend (NKoidc-1) against moto server: the user pool and app
 // client calls of the controller and of the probe. moto is reached at a private
@@ -25,9 +25,12 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/craftainer-labs/lib-operator-go/pkg/apis/common"
 	"github.com/craftainer-labs/lib-operator-go/pkg/cloud"
@@ -39,6 +42,34 @@ import (
 	"github.com/craftainer-labs/operator-oidc/internal/controller"
 	"github.com/craftainer-labs/operator-oidc/internal/idpclient"
 )
+
+// noEvents is an events.EventRecorder that drops what it is told.
+type noEvents struct{}
+
+// Eventf implements events.EventRecorder.
+func (noEvents) Eventf(_, _ runtime.Object, _, _, _, _ string, _ ...any) {}
+
+// controllerClient is a fake Kubernetes API server for the controller: the
+// claim, the provider and the Secrets it reads live there, moto is real.
+func controllerClient(t *testing.T, objs ...client.Object) client.Client {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := oidcv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	m := meta.NewDefaultRESTMapper(nil)
+	m.Add(oidcv1alpha1.GroupVersion.WithKind("ClusterIdentityProvider"), meta.RESTScopeRoot)
+	m.Add(oidcv1alpha1.GroupVersion.WithKind("IdentityProvider"), meta.RESTScopeNamespace)
+	m.Add(oidcv1alpha1.GroupVersion.WithKind("OidcClient"), meta.RESTScopeNamespace)
+	m.Add(corev1.SchemeGroupVersion.WithKind("Secret"), meta.RESTScopeNamespace)
+	m.Add(corev1.SchemeGroupVersion.WithKind("ConfigMap"), meta.RESTScopeNamespace)
+	m.Add(corev1.SchemeGroupVersion.WithKind("Namespace"), meta.RESTScopeRoot)
+	return fake.NewClientBuilder().WithScheme(scheme).WithRESTMapper(m).WithObjects(objs...).
+		WithStatusSubresource(&oidcv1alpha1.OidcClient{}).Build()
+}
 
 const (
 	motoRegion = "us-east-1"
