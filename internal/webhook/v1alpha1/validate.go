@@ -42,7 +42,10 @@ func validateProvider(spec *oidcv1alpha1.ProviderConfig, proxyURL string) field.
 			errs = append(errs, field.Invalid(p, redacted, msg))
 		}
 	}
-	check(path.Child("issuer"), string(spec.Issuer))
+	// A Cognito provider has no issuer of its own: it is derived from the pool.
+	if spec.Type != oidcv1alpha1.ProviderCognito {
+		check(path.Child("issuer"), string(spec.Issuer))
+	}
 	if spec.Keycloak != nil {
 		check(path.Child("keycloak", "baseURL"), string(spec.Keycloak.BaseURL))
 	}

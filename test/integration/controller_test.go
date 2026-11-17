@@ -79,7 +79,7 @@ func TestOidcClientControllerOnKeycloak(t *testing.T) {
 		Keycloak:      &oidcv1alpha1.KeycloakConfig{BaseURL: oidcv1alpha1.HTTPSURL(baseURL), Realm: realm},
 		AllowedScopes: []oidcv1alpha1.Scope{"openid", "profile"},
 	}
-	provider.Spec.AdminCredentialsSecretRef = common.AdminSecretRef{Name: "admin"}
+	provider.Spec.AdminCredentialsSecretRef = &common.AdminSecretRef{Name: "admin"}
 	provider.Spec.TLS = &common.TLS{CABundle: &common.CABundle{ConfigMapRef: &common.KeyReference{Name: "ca"}}}
 
 	claim := &oidcv1alpha1.OidcClient{ObjectMeta: metav1.ObjectMeta{

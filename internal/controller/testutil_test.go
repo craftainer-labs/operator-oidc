@@ -157,7 +157,7 @@ func keycloakProvider(ns string, f *idp) *oidcv1alpha1.IdentityProvider {
 		Type: oidcv1alpha1.ProviderKeycloak, Issuer: oidcv1alpha1.HTTPSURL(f.issuer()),
 		Keycloak: &oidcv1alpha1.KeycloakConfig{BaseURL: oidcv1alpha1.HTTPSURL(f.srv.URL), Realm: "main"},
 	}
-	p.Spec.AdminCredentialsSecretRef = common.AdminSecretRef{Name: "admin"}
+	p.Spec.AdminCredentialsSecretRef = &common.AdminSecretRef{Name: "admin"}
 	p.Spec.TLS = tlsCA
 	return p
 }
@@ -167,7 +167,7 @@ func keycloakProvider(ns string, f *idp) *oidcv1alpha1.IdentityProvider {
 func clusterKeycloak(f *idp) *oidcv1alpha1.ClusterIdentityProvider {
 	p := &oidcv1alpha1.ClusterIdentityProvider{ObjectMeta: metav1.ObjectMeta{Name: "kc", UID: "uid-ckc", Generation: 1}}
 	p.Spec.ProviderConfig = keycloakProvider("", f).Spec.ProviderConfig
-	p.Spec.AdminCredentialsSecretRef = common.AdminSecretRef{Name: "admin", Namespace: opsNS}
+	p.Spec.AdminCredentialsSecretRef = &common.AdminSecretRef{Name: "admin", Namespace: opsNS}
 	p.Spec.TLS = tlsCA
 	p.Spec.AllowedNamespaces = common.AllowedNamespaces{From: common.NamespacesAll}
 	return p
@@ -180,7 +180,7 @@ func dcrProvider(ns, endpoint string) *oidcv1alpha1.IdentityProvider {
 		Type: oidcv1alpha1.ProviderDynamicRegistration, Issuer: "https://idp.example",
 		DynamicRegistration: &oidcv1alpha1.DynamicRegistrationConfig{RegistrationEndpoint: oidcv1alpha1.HTTPSURL(endpoint)},
 	}
-	p.Spec.AdminCredentialsSecretRef = common.AdminSecretRef{Name: "admin"}
+	p.Spec.AdminCredentialsSecretRef = &common.AdminSecretRef{Name: "admin"}
 	return p
 }
 

@@ -29,8 +29,8 @@ func identityProvider(cfg oidcv1alpha1.ProviderConfig, proxy string) *oidcv1alph
 	return &oidcv1alpha1.IdentityProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "keycloak", Namespace: "default"},
 		Spec: oidcv1alpha1.IdentityProviderSpec{
-			ServerCommon:   common.ServerCommon{ProxyURL: proxy},
-			ProviderConfig: cfg,
+			CloudServerCommon: common.CloudServerCommon{ProxyURL: proxy},
+			ProviderConfig:    cfg,
 		},
 	}
 }
@@ -39,8 +39,8 @@ func clusterIdentityProvider(cfg oidcv1alpha1.ProviderConfig, proxy string) *oid
 	return &oidcv1alpha1.ClusterIdentityProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "keycloak"},
 		Spec: oidcv1alpha1.ClusterIdentityProviderSpec{
-			ServerCommon:   common.ServerCommon{ProxyURL: proxy},
-			ProviderConfig: cfg,
+			CloudServerCommon: common.CloudServerCommon{ProxyURL: proxy},
+			ProviderConfig:    cfg,
 		},
 	}
 }
@@ -71,6 +71,9 @@ var providerCases = []struct {
 	{name: "valid IPv6", cfg: providerConfig("https://[fd00::7]/realms/x", "https://[fd00::7]")},
 	{name: "valid dynamic registration", cfg: dynamicConfig("https://idp.example.com", "https://idp.example.com/register")},
 	{name: "valid with a proxy", cfg: providerConfig(goodIssuer, goodBase), proxy: "socks5://proxy:1080"},
+	{name: "valid Cognito, whose issuer is derived", cfg: oidcv1alpha1.ProviderConfig{
+		Type: oidcv1alpha1.ProviderCognito, Cognito: &oidcv1alpha1.CognitoConfig{UserPoolID: "eu-west-1_AbCdEf123", Domain: "team-auth"},
+	}},
 	{name: "issuer over http", cfg: providerConfig("http://sso.example.com/realms/x", goodBase), field: "spec.issuer", message: "https URL"},
 	{name: "issuer without a host", cfg: providerConfig("https:///realms/x", goodBase), field: "spec.issuer", message: "absolute URL with a host"},
 	{name: "issuer with userinfo", cfg: providerConfig("https://user:hunter2@sso.example.com/x", goodBase), field: "spec.issuer", message: "must not carry credentials"},

@@ -11,13 +11,18 @@ import (
 	"github.com/craftainer-labs/operator-oidc/internal/idpclient"
 )
 
-// Prober is the probe.Prober of both provider kinds. A provider is healthy when
-// it answers its discovery document at the issuer and, for Keycloak, accepts
-// the admin service account too (one authenticated request to the realm's
-// clients). A provider of type DynamicRegistration needs no more: registering
-// a client to try it would leave one behind, and the initial access token can
-// only be proved by using it. The probe records the discovery document's
-// endpoints in status.discovery.
+// Prober is the probe.CloudProber of both provider kinds. A provider is healthy
+// when it answers its discovery document at the issuer and, for Keycloak,
+// accepts the admin service account too (one authenticated request to the
+// realm's clients). A provider of type DynamicRegistration needs no more:
+// registering a client to try it would leave one behind, and the initial access
+// token can only be proved by using it. The probe records the discovery
+// document's endpoints in status.discovery.
+//
+// A provider of type Cognito is healthy when its user pool can be described
+// with the operator's cloud credentials (the Cognito API, not the hosted UI:
+// the endpoints of status.discovery follow from the configuration). The probe
+// records the pool in status.discovered and the CloudResolved condition.
 //
 // It builds its clients through the egress policy and the provider's own proxy
 // and TLS settings, with connections of their own: it never takes a client from
@@ -31,31 +36,46 @@ type Prober struct {
 	Config Config
 }
 
-var _ probe.Prober = Prober{}
+var _ probe.CloudProber = Prober{}
 
-// Probe checks the provider srv names. It returns no version: neither Keycloak
-// (its Admin REST API reports it only to a master-realm administrator) nor a
-// dynamic registration provider tells a client of one realm.
-func (p Prober) Probe(ctx context.Context, srv server.Server, conn server.Connection) (string, error) {
-	spec, status, err := providerOf(srv)
+// ProbeCloud checks the provider srv names. It returns no version: neither
+// Keycloak (its Admin REST API reports it only to a master-realm administrator),
+// nor a dynamic registration provider, nor Cognito tells a client of one.
+func (p Prober) ProbeCloud(ctx context.Context, srv server.CloudServer, conn server.CloudConnection) (probe.CloudResult, error) {
+	ref, err := providerOf(srv)
 	if err != nil {
-		return "", categoryOnly(err)
+		return probe.CloudResult{}, categoryOnly(err)
 	}
+	if ref.spec.Type == oidcv1alpha1.ProviderCognito {
+		disc, err := p.Config.discoverCognito(ctx, ref, conn)
+		recordCloud(ref.status, srv.GetGeneration(), err)
+		if err != nil {
+			return probe.CloudResult{}, categoryOnly(err)
+		}
+		record(ref.status, cognitoDiscovery(ref.spec.Cognito))
+		return probe.CloudResult{Discovered: disc}, nil
+	}
+	return probe.CloudResult{}, p.probeDiscovery(ctx, ref, conn.Connection)
+}
+
+// probeDiscovery probes a Keycloak or dynamic registration provider.
+func (p Prober) probeDiscovery(ctx context.Context, ref providerRef, conn server.Connection) error {
+	spec, status := ref.spec, ref.status
 	tr, err := p.Config.transport(conn, false)
 	if err != nil {
-		return "", categoryOnly(err)
+		return categoryOnly(err)
 	}
 	if spec.Type == oidcv1alpha1.ProviderKeycloak {
 		target, err := keycloakTarget(spec, conn, tr)
 		if err != nil {
-			return "", categoryOnly(err)
+			return categoryOnly(err)
 		}
 		k, err := idpclient.NewKeycloak(target)
 		if err != nil {
-			return "", categoryOnly(err)
+			return categoryOnly(err)
 		}
 		if err := k.Probe(ctx); err != nil {
-			return "", categoryOnly(err)
+			return categoryOnly(err)
 		}
 	}
 	// The server name override is for the host the admin credentials go to;
@@ -65,13 +85,13 @@ func (p Prober) Probe(ctx context.Context, srv server.Server, conn server.Connec
 	}
 	d, err := idpclient.Discover(ctx, tr, string(spec.Issuer))
 	if err != nil {
-		return "", categoryOnly(err)
+		return categoryOnly(err)
 	}
 	record(status, &oidcv1alpha1.Discovery{
 		TokenEndpoint: d.TokenEndpoint, AuthorizationEndpoint: d.AuthorizationEndpoint,
 		JWKSURI: d.JWKSURI, UserinfoEndpoint: d.UserinfoEndpoint,
 	})
-	return "", nil
+	return nil
 }
 
 // record sets status.discovery. The probe helper writes the status only when

@@ -48,7 +48,7 @@ func TestOidcClientOnAProviderThatCannotBeUsed(t *testing.T) {
 		Type: oidcv1alpha1.ProviderKeycloak, Issuer: "https://127.0.0.1/realms/main",
 		Keycloak: &oidcv1alpha1.KeycloakConfig{BaseURL: "https://127.0.0.1", Realm: "main"},
 	}
-	provider.Spec.AdminCredentialsSecretRef = common.AdminSecretRef{Name: "missing"}
+	provider.Spec.AdminCredentialsSecretRef = &common.AdminSecretRef{Name: "missing"}
 	g.Expect(c.Create(ctx, provider)).To(Succeed())
 	claim := &oidcv1alpha1.OidcClient{ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "claims"}}
 	claim.Spec.ServerRef = common.ServerRef{Kind: "IdentityProvider", Name: "nokey"}

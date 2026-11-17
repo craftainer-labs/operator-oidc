@@ -29,6 +29,9 @@ fakes only claim:
   category, the egress policy refuses the loopback address, and no error text
   holds the address or a secret.
 
+The Cognito backend has its own lane (below): build tags `integration` and
+`cognito`, so it stays out of the Keycloak job's package.
+
 Files:
 
 - `controller_test.go` — the `OidcClient` controller (`internal/controller`) over a
@@ -50,6 +53,37 @@ Files:
   administrator's random password (`admin-password`), with `openssl`. The key is
   world-readable because Keycloak runs as another user than the one that
   generated it; the files live two days in a directory made for one run.
+
+## Cognito (moto)
+
+`cognito_test.go` (build tags `integration` and `cognito`) runs the Cognito
+backend (`internal/controller`) against [moto](https://github.com/getmoto/moto)
+server 5.2.5, pinned by digest in `integration.yml`. It reads `MOTO_ENDPOINT`
+(required, `http://<private ip>:5000`) and needs no other service:
+
+- the probe describes the user pool and records `status.discovered` (region,
+  pool ID, account ID, issuer, hosted-UI host) and the `CloudResolved` condition,
+  a missing pool is `TargetNotFound`, and an `endpointOverride` is refused in
+  `strict` egress mode (`EndpointOverrideForbidden`);
+- an `OidcClient` becomes a Ready app client: the name, callback URLs and secret
+  moto holds are the claim's, the binding Secret carries the app client ID, the
+  secret, the issuer and the hosted-UI endpoints, a changed redirect URI is sent
+  with `UpdateUserPoolClient` without changing the secret, and deleting the claim
+  deletes the app client.
+
+What moto cannot check, so no test here does: the hosted UI and the OAuth
+endpoints (a sign-in, `/oauth2/token`, PKCE), that Cognito accepts a set of
+OAuth flows and scopes together (moto stores what it is given), IAM and the
+operator's permissions, real IRSA or EKS Pod Identity (the test uses a static
+key Secret), the throttling and eventual consistency of the real API, and the
+multi-secret calls (`AddUserPoolClientSecret` and the like are not in moto
+5.2.5). The tests reach moto at a private address with
+`EGRESS_MODE=allow-private` in their own wiring, never at loopback, which
+`pkg/egress` blocks.
+
+```sh
+MOTO_ENDPOINT=http://<moto ip>:5000 go test -tags integration,cognito -count=1 -run Cognito ./test/integration/...
+```
 
 ## Running
 

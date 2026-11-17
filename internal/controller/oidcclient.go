@@ -53,10 +53,7 @@ func (r *ClientReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 	var ext lifecycle.External[oidcv1alpha1.OidcClientSpec, clientState]
 	if err == nil {
-		var x *clientExternal
-		if x, err = r.external(ctx, be, &c); err == nil {
-			ext = x
-		}
+		ext, err = r.external(ctx, be, &c)
 	}
 	opts := r.options(err)
 	if be != nil {
@@ -84,12 +81,13 @@ func (r *ClientReconciler) store() dcr.Store {
 }
 
 // external builds the External of the claim on the resolved provider.
-func (r *ClientReconciler) external(_ context.Context, be *Backend, c *oidcv1alpha1.OidcClient) (*clientExternal, error) {
+func (r *ClientReconciler) external(_ context.Context, be *Backend, c *oidcv1alpha1.OidcClient) (lifecycle.External[oidcv1alpha1.OidcClientSpec, clientState], error) {
 	b := base{cfg: r.Config, claim: c, be: be}
 	b.persist = func(ctx context.Context) error { return r.Client.Status().Update(ctx, c) }
 	x := &clientExternal{claim: c}
 	x.want, x.wantErr = resolveSpec(c.Spec, be.Spec.AllowedScopes)
 	x.webOriginsDropped = be.Spec.Type != oidcv1alpha1.ProviderKeycloak && len(c.Spec.WebOrigins) > 0
+	var cog *cognitoDriver
 	switch be.Spec.Type {
 	case oidcv1alpha1.ProviderKeycloak:
 		k, err := be.Keycloak()
@@ -98,6 +96,13 @@ func (r *ClientReconciler) external(_ context.Context, be *Backend, c *oidcv1alp
 		}
 		x.drv = &keycloakDriver{base: b, k: k}
 		x.name = idpclient.KeycloakClientID(c.Namespace, c.Name)
+	case oidcv1alpha1.ProviderCognito:
+		api, err := be.Cognito()
+		if err != nil {
+			return nil, err
+		}
+		cog = &cognitoDriver{base: b, api: api, pool: be.UserPoolID}
+		x.name = idpclient.CognitoClientName(c.Namespace, c.Name)
 	default:
 		d, err := be.DCR()
 		if err != nil {
@@ -112,6 +117,10 @@ func (r *ClientReconciler) external(_ context.Context, be *Backend, c *oidcv1alp
 		x.name = n
 	}
 	c.SetExternalName(x.name)
+	if cog != nil {
+		// A Cognito app client cannot rotate its secret: it is no Rotator.
+		return &cognitoExternal{claim: c, drv: cog, name: x.name, want: x.want, wantErr: x.wantErr, webOriginsDropped: x.webOriginsDropped}, nil
+	}
 	return x, nil
 }
 
@@ -204,11 +213,12 @@ func (e *scopeNotAllowedError) Error() string {
 func (e *scopeNotAllowedError) Unwrap() error { return ErrScopeNotAllowed }
 
 // clientState is what Observe read of the client at the provider: Keycloak's
-// own representation, or the stored registration of a dynamically registered
-// client.
+// own representation, the stored registration of a dynamically registered
+// client, or the ID and secret of a Cognito app client.
 type clientState struct {
 	kc  idpclient.Client
 	reg dcr.State
+	cog cognitoState
 }
 
 // driver is the provider-specific half of the External.
@@ -333,7 +343,7 @@ type base struct {
 // empty for a public client. The endpoints are what the provider's last probe
 // found.
 func (b *base) data(clientID, secret string) binding.Data {
-	d := binding.Data{"issuer": []byte(b.be.Spec.Issuer), "clientId": []byte(clientID)}
+	d := binding.Data{"issuer": []byte(b.be.Issuer), "clientId": []byte(clientID)}
 	if secret != "" {
 		d["clientSecret"] = []byte(secret)
 	}
@@ -373,19 +383,23 @@ func (b *base) currentSecret(ctx context.Context) (string, error) {
 const (
 	conditionWebOriginsIgnored = "WebOriginsIgnored"
 	reasonWebOriginsIgnored    = "WebOriginsIgnored"
-	textWebOriginsIgnored      = "spec.webOrigins is ignored: the provider registers clients by dynamic registration, which has no web origins field"
+	textWebOriginsIgnored      = "spec.webOrigins is ignored: the provider has no web origins field (dynamic registration and a Cognito app client have none)"
 )
 
 // noteWebOrigins sets the WebOriginsIgnored condition, or removes it when it no
 // longer applies. The condition goes to the status with the reconcile's own
 // write.
-func (e *clientExternal) noteWebOrigins() {
-	if !e.webOriginsDropped {
-		meta.RemoveStatusCondition(e.claim.GetConditions(), conditionWebOriginsIgnored)
+func (e *clientExternal) noteWebOrigins() { setWebOriginsCondition(e.claim, e.webOriginsDropped) }
+
+// setWebOriginsCondition sets or removes the WebOriginsIgnored condition of a
+// claim.
+func setWebOriginsCondition(claim *oidcv1alpha1.OidcClient, dropped bool) {
+	if !dropped {
+		meta.RemoveStatusCondition(claim.GetConditions(), conditionWebOriginsIgnored)
 		return
 	}
-	meta.SetStatusCondition(e.claim.GetConditions(), metav1.Condition{
-		Type: conditionWebOriginsIgnored, Status: metav1.ConditionTrue, ObservedGeneration: e.claim.Generation,
+	meta.SetStatusCondition(claim.GetConditions(), metav1.Condition{
+		Type: conditionWebOriginsIgnored, Status: metav1.ConditionTrue, ObservedGeneration: claim.Generation,
 		Reason: reasonWebOriginsIgnored, Message: textWebOriginsIgnored,
 	})
 }

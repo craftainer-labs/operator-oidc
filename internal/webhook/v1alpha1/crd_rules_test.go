@@ -11,6 +11,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/craftainer-labs/lib-operator-go/pkg/apis/common"
+	"github.com/craftainer-labs/lib-operator-go/pkg/cloud"
 	oidcv1alpha1 "github.com/craftainer-labs/operator-oidc/api/v1alpha1"
 )
 
@@ -58,11 +59,38 @@ var _ = Describe("The oidc.craftainer.dev CRDs", func() {
 			},
 		}
 	}
+	cognito := func() oidcv1alpha1.ProviderConfig {
+		return oidcv1alpha1.ProviderConfig{
+			Type: oidcv1alpha1.ProviderCognito,
+			Cognito: &oidcv1alpha1.CognitoConfig{
+				AWSClusterBlock: cloud.AWSClusterBlock{AWSBlock: cloud.AWSBlock{Region: "eu-west-1"}},
+				UserPoolID:      "eu-west-1_AbCdEf123", Domain: "team-auth",
+			},
+		}
+	}
+	clusterCognito := func(name string) *oidcv1alpha1.ClusterIdentityProvider {
+		return &oidcv1alpha1.ClusterIdentityProvider{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec: oidcv1alpha1.ClusterIdentityProviderSpec{
+				ProviderConfig:    cognito(),
+				AllowedNamespaces: common.AllowedNamespaces{From: common.NamespacesAll},
+			},
+		}
+	}
+	namespacedCognito := func(name string) *oidcv1alpha1.IdentityProvider {
+		return &oidcv1alpha1.IdentityProvider{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec: oidcv1alpha1.IdentityProviderSpec{
+				ProviderConfig: cognito(),
+				Credentials:    &cloud.NamespacedCredentials{Source: cloud.SourceSecret, SecretRef: &cloud.SecretRef{Name: "aws"}},
+			},
+		}
+	}
 	clusterProvider := func(name string) *oidcv1alpha1.ClusterIdentityProvider {
 		return &oidcv1alpha1.ClusterIdentityProvider{
 			ObjectMeta: metav1.ObjectMeta{Name: name},
 			Spec: oidcv1alpha1.ClusterIdentityProviderSpec{
-				ServerCommon:      common.ServerCommon{AdminCredentialsSecretRef: common.AdminSecretRef{Name: "admin", Namespace: "craftainer-system"}},
+				CloudServerCommon: common.CloudServerCommon{AdminCredentialsSecretRef: &common.AdminSecretRef{Name: "admin", Namespace: "craftainer-system"}},
 				ProviderConfig:    keycloak(),
 				AllowedNamespaces: common.AllowedNamespaces{From: common.NamespacesAll},
 			},
@@ -72,8 +100,8 @@ var _ = Describe("The oidc.craftainer.dev CRDs", func() {
 		return &oidcv1alpha1.IdentityProvider{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
 			Spec: oidcv1alpha1.IdentityProviderSpec{
-				ServerCommon:   common.ServerCommon{AdminCredentialsSecretRef: common.AdminSecretRef{Name: "admin"}},
-				ProviderConfig: keycloak(),
+				CloudServerCommon: common.CloudServerCommon{AdminCredentialsSecretRef: &common.AdminSecretRef{Name: "admin"}},
+				ProviderConfig:    keycloak(),
 			},
 		}
 	}
@@ -196,6 +224,115 @@ var _ = Describe("The oidc.craftainer.dev CRDs", func() {
 			p := clusterProvider("bad-host")
 			p.Spec.Issuer = "https://sso_1.example.com/realms/x"
 			rejected(create(p), "must have a host name or an IP address as its host")
+		})
+	})
+
+	Describe("A Cognito ClusterIdentityProvider", func() {
+		It("is admitted with the operator's workload identity or with a Secret, and has no issuer or admin Secret", func() {
+			Expect(create(clusterCognito("wi"))).To(Succeed())
+			p := clusterCognito("secret")
+			p.Spec.Credentials = &cloud.Credentials{Source: cloud.SourceSecret, SecretRef: &cloud.SecretRef{Name: "aws", Namespace: "craftainer-system"}}
+			Expect(create(p)).To(Succeed())
+			got := &oidcv1alpha1.ClusterIdentityProvider{}
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: "secret"}, got)).To(Succeed())
+			Expect(got.Spec.AllowedScopes).To(Equal([]oidcv1alpha1.Scope{"openid", "profile", "email"}))
+			Expect(got.Spec.Issuer).To(BeEmpty())
+			Expect(got.GetEndpoint()).To(BeEmpty())
+		})
+
+		It("forbids the admin Secret and the issuer, which is derived", func() {
+			p := clusterCognito("admin")
+			p.Spec.AdminCredentialsSecretRef = &common.AdminSecretRef{Name: "admin", Namespace: "craftainer-system"}
+			rejected(create(p), "adminCredentialsSecretRef is required, except for type Cognito")
+
+			p = clusterCognito("issuer")
+			p.Spec.Issuer = "https://cognito-idp.eu-west-1.amazonaws.com/eu-west-1_AbCdEf123"
+			rejected(create(p), "forbidden for Cognito")
+		})
+
+		It("allows credentials only on a cloud provider, and a Secret needs its name and namespace", func() {
+			p := clusterProvider("kc-creds")
+			p.Spec.Credentials = &cloud.Credentials{Source: cloud.SourceWorkloadIdentity}
+			rejected(create(p), "credentials is only for a cloud provider")
+
+			p2 := clusterCognito("no-ref")
+			p2.Spec.Credentials = &cloud.Credentials{Source: cloud.SourceSecret}
+			rejected(create(p2), "secretRef is required when source is Secret")
+
+			p2 = clusterCognito("no-ns")
+			p2.Spec.Credentials = &cloud.Credentials{Source: cloud.SourceSecret, SecretRef: &cloud.SecretRef{Name: "aws"}}
+			rejected(create(p2), "secretRef.namespace is required on a cluster server")
+		})
+
+		It("needs the cognito block and nothing else, with a valid pool, region, domain and role", func() {
+			p := clusterCognito("no-block")
+			p.Spec.Cognito = nil
+			rejected(create(p), "exactly the block matching type must be set")
+
+			p = clusterCognito("two-blocks")
+			p.Spec.Keycloak = keycloak().Keycloak
+			rejected(create(p), "exactly the block matching type must be set")
+
+			p = clusterCognito("bad-pool")
+			p.Spec.Cognito.UserPoolID = "not a pool"
+			rejected(create(p), "userPoolID")
+
+			p = clusterCognito("bad-region")
+			p.Spec.Cognito.Region = "mars"
+			rejected(create(p), "region")
+
+			p = clusterCognito("bad-domain")
+			p.Spec.Cognito.Domain = "evil.example/path"
+			rejected(create(p), "domain")
+
+			p = clusterCognito("bad-role")
+			p.Spec.Cognito.RoleARN = "role/x"
+			rejected(create(p), "roleARN must start with arn:")
+
+			p = clusterCognito("role")
+			p.Spec.Cognito.RoleARN = "arn:aws:iam::111122223333:role/operator"
+			p.Spec.Cognito.EndpointOverride = "http://10.0.0.5:5000"
+			Expect(create(p)).To(Succeed())
+		})
+
+		It("keeps the type immutable", func() {
+			p := clusterCognito("pinned-cognito")
+			Expect(create(p)).To(Succeed())
+			p.Spec.ProviderConfig = keycloak()
+			p.Spec.AdminCredentialsSecretRef = &common.AdminSecretRef{Name: "admin", Namespace: "craftainer-system"}
+			rejected(k8sClient.Update(ctx, p), "type is immutable")
+		})
+	})
+
+	Describe("A Cognito IdentityProvider", func() {
+		It("is admitted with a Secret in its own namespace", func() {
+			Expect(create(namespacedCognito("secret"))).To(Succeed())
+		})
+
+		It("cannot use the operator's workload identity and needs credentials", func() {
+			p := namespacedCognito("no-creds")
+			p.Spec.Credentials = nil
+			rejected(create(p), "must set credentials with source Secret")
+
+			p = namespacedCognito("wi")
+			p.Spec.Credentials = &cloud.NamespacedCredentials{Source: cloud.SourceWorkloadIdentity}
+			rejected(create(p), "a namespaced server must use source Secret")
+
+			p = namespacedCognito("ns")
+			p.Spec.Credentials.SecretRef.Namespace = "elsewhere"
+			rejected(create(p), "secretRef.namespace is forbidden on a namespaced server")
+		})
+
+		It("has no endpoint override, which is for cluster providers", func() {
+			p := namespacedCognito("override")
+			p.Spec.Cognito.EndpointOverride = "http://10.0.0.5:5000"
+			rejected(create(p), "cognito.endpointOverride is only for a cluster-scoped provider")
+		})
+
+		It("forbids the admin Secret", func() {
+			p := namespacedCognito("admin")
+			p.Spec.AdminCredentialsSecretRef = &common.AdminSecretRef{Name: "admin"}
+			rejected(create(p), "adminCredentialsSecretRef is required, except for type Cognito")
 		})
 	})
 

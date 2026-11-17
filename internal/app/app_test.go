@@ -399,12 +399,12 @@ func TestProviderProbesWriteTheStatusOfBothKinds(t *testing.T) {
 	}
 	cluster := &oidcv1alpha1.ClusterIdentityProvider{ObjectMeta: metav1.ObjectMeta{Name: "probe-cluster"}}
 	cluster.Spec.ProviderConfig = keycloak
-	cluster.Spec.AdminCredentialsSecretRef = common.AdminSecretRef{Name: "kc-admin", Namespace: opsNS}
+	cluster.Spec.AdminCredentialsSecretRef = &common.AdminSecretRef{Name: "kc-admin", Namespace: opsNS}
 	cluster.Spec.AllowedNamespaces = common.AllowedNamespaces{From: common.NamespacesAll}
 	g.Expect(c.Create(ctx, cluster)).To(Succeed())
 	namespaced := &oidcv1alpha1.IdentityProvider{ObjectMeta: metav1.ObjectMeta{Name: "probe-team", Namespace: "team"}}
 	namespaced.Spec.ProviderConfig = keycloak
-	namespaced.Spec.AdminCredentialsSecretRef = common.AdminSecretRef{Name: "missing"}
+	namespaced.Spec.AdminCredentialsSecretRef = &common.AdminSecretRef{Name: "missing"}
 	g.Expect(c.Create(ctx, namespaced)).To(Succeed())
 	t.Cleanup(func() { _ = c.Delete(ctx, cluster); _ = c.Delete(ctx, namespaced) })
 

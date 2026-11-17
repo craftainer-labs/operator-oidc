@@ -9,16 +9,20 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 
 	"github.com/craftainer-labs/lib-operator-go/pkg/apis/common"
+	"github.com/craftainer-labs/lib-operator-go/pkg/cloud"
 	"github.com/craftainer-labs/lib-operator-go/pkg/lifecycle"
+	"github.com/craftainer-labs/lib-operator-go/pkg/probe"
 	"github.com/craftainer-labs/lib-operator-go/pkg/server"
 )
 
 // The claim kind and the server kinds must satisfy the interfaces the
 // lib-operator-go reconciler is written against.
 var (
-	_ lifecycle.Claim = (*OidcClient)(nil)
-	_ server.Server   = (*IdentityProvider)(nil)
-	_ server.Server   = (*ClusterIdentityProvider)(nil)
+	_ lifecycle.Claim    = (*OidcClient)(nil)
+	_ server.CloudServer = (*IdentityProvider)(nil)
+	_ server.CloudServer = (*ClusterIdentityProvider)(nil)
+	_ probe.CloudServer  = (*IdentityProvider)(nil)
+	_ probe.CloudServer  = (*ClusterIdentityProvider)(nil)
 )
 
 func TestAddToSchemeRegistersEveryKind(t *testing.T) {
@@ -45,6 +49,7 @@ func TestEndpointIsTheKeycloakBaseURLOrTheRegistrationEndpoint(t *testing.T) {
 		{"DynamicRegistration", ProviderConfig{Type: ProviderDynamicRegistration, DynamicRegistration: &DynamicRegistrationConfig{RegistrationEndpoint: "https://idp.example.com/register"}}, "https://idp.example.com/register"},
 		{"Keycloak without its block", ProviderConfig{Type: ProviderKeycloak}, ""},
 		{"DynamicRegistration without its block", ProviderConfig{Type: ProviderDynamicRegistration}, ""},
+		{"Cognito has no URL of its own", ProviderConfig{Type: ProviderCognito, Cognito: &CognitoConfig{UserPoolID: "eu-west-1_Ab"}}, ""},
 		{"unknown type", ProviderConfig{Type: "Other", Keycloak: &KeycloakConfig{BaseURL: "https://x"}}, ""},
 	} {
 		g.Expect(tc.config.Endpoint()).To(Equal(tc.want), tc.name)
@@ -54,11 +59,18 @@ func TestEndpointIsTheKeycloakBaseURLOrTheRegistrationEndpoint(t *testing.T) {
 func TestIdentityProviderAccessors(t *testing.T) {
 	g := NewWithT(t)
 	b := &IdentityProvider{Spec: IdentityProviderSpec{
-		ServerCommon:   common.ServerCommon{ProxyURL: "http://proxy:3128"},
-		ProviderConfig: ProviderConfig{Type: ProviderKeycloak, Keycloak: &KeycloakConfig{BaseURL: "https://sso.example.com"}},
+		CloudServerCommon: common.CloudServerCommon{ProxyURL: "http://proxy:3128"},
+		ProviderConfig:    ProviderConfig{Type: ProviderKeycloak, Keycloak: &KeycloakConfig{BaseURL: "https://sso.example.com"}},
 	}}
-	g.Expect(b.GetCommon().ProxyURL).To(Equal("http://proxy:3128"))
+	g.Expect(b.GetCloudCommon().ProxyURL).To(Equal("http://proxy:3128"))
 	g.Expect(b.GetEndpoint()).To(Equal("https://sso.example.com"))
+	name, ns := b.GetCredentialsSecret()
+	g.Expect(name).To(BeEmpty())
+	g.Expect(ns).To(BeEmpty())
+	b.Spec.Credentials = &cloud.NamespacedCredentials{Source: cloud.SourceSecret, SecretRef: &cloud.SecretRef{Name: "aws"}}
+	name, ns = b.GetCredentialsSecret()
+	g.Expect(name).To(Equal("aws"))
+	g.Expect(ns).To(BeEmpty())
 	g.Expect(b.GetAllowedNamespaces()).To(BeNil())
 	b.GetServerStatus().ServerVersion = "26.0"
 	g.Expect(b.Status.ServerVersion).To(Equal("26.0"))
@@ -67,12 +79,23 @@ func TestIdentityProviderAccessors(t *testing.T) {
 func TestClusterIdentityProviderAccessors(t *testing.T) {
 	g := NewWithT(t)
 	b := &ClusterIdentityProvider{Spec: ClusterIdentityProviderSpec{
-		ServerCommon:      common.ServerCommon{ProxyURL: "http://proxy:3128"},
+		CloudServerCommon: common.CloudServerCommon{ProxyURL: "http://proxy:3128"},
 		ProviderConfig:    ProviderConfig{Type: ProviderDynamicRegistration, DynamicRegistration: &DynamicRegistrationConfig{RegistrationEndpoint: "https://idp.example.com/register"}},
 		AllowedNamespaces: common.AllowedNamespaces{From: common.NamespacesAll},
 	}}
-	g.Expect(b.GetCommon().ProxyURL).To(Equal("http://proxy:3128"))
+	g.Expect(b.GetCloudCommon().ProxyURL).To(Equal("http://proxy:3128"))
 	g.Expect(b.GetEndpoint()).To(Equal("https://idp.example.com/register"))
+	name, ns := b.GetCredentialsSecret()
+	g.Expect(name).To(BeEmpty())
+	g.Expect(ns).To(BeEmpty())
+	// Workload identity names no Secret; a Secret source names it with its namespace.
+	b.Spec.Credentials = &cloud.Credentials{Source: cloud.SourceWorkloadIdentity}
+	name, _ = b.GetCredentialsSecret()
+	g.Expect(name).To(BeEmpty())
+	b.Spec.Credentials = &cloud.Credentials{Source: cloud.SourceSecret, SecretRef: &cloud.SecretRef{Name: "aws", Namespace: "ops"}}
+	name, ns = b.GetCredentialsSecret()
+	g.Expect(name).To(Equal("aws"))
+	g.Expect(ns).To(Equal("ops"))
 	g.Expect(b.GetAllowedNamespaces().From).To(Equal(common.NamespacesAll))
 	b.GetServerStatus().ServerVersion = "1.0"
 	g.Expect(b.Status.ServerVersion).To(Equal("1.0"))

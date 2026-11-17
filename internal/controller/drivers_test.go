@@ -424,7 +424,7 @@ func (o *oc) driver(c *oidcv1alpha1.OidcClient) driver {
 	if err != nil {
 		o.t.Fatal(err)
 	}
-	return x.drv
+	return x.(*clientExternal).drv
 }
 
 // A binding that does not hold the secret of a confidential client cannot be
