@@ -40,3 +40,15 @@ const maxCognitoClientNameLen = 128
 func CognitoClientName(ns, name string) string {
 	return naming.Tenant(ns, name, maxCognitoClientNameLen, "-", naming.HashShort)
 }
+
+// maxEntraAppNameLen is the cap of an application registration's display name.
+const maxEntraAppNameLen = 120
+
+// EntraAppName is the display name of the Entra application registration of an
+// OidcClient. An application has no tag the operator may rely on for ownership
+// (the drafts say none), and the object ID in status.externalId is what finds
+// it, so the name is only a label and carries the long hash, as ADR 0002
+// section 16.6 says.
+func EntraAppName(ns, name string) string {
+	return naming.Tenant(ns, name, maxEntraAppNameLen, "-", naming.HashLong)
+}

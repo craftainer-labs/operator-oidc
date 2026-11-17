@@ -30,7 +30,8 @@ fakes only claim:
   holds the address or a secret.
 
 The Cognito backend has its own package and lane (below): `cognito/`, build tags
-`integration` and `cognito`.
+`integration` and `cognito`. So has the Entra backend: `entra/`, build tags
+`integration` and `entra` (fake Graph and fake Entra, below).
 
 Files:
 
@@ -117,3 +118,29 @@ that expects its refusal.
 - Point the tests at a server that holds anything you want to keep. They create
   a realm and remove only the clients they made, but they connect as the
   administrator.
+
+## Entra (fake Graph and fake Entra)
+
+`entra/entra_test.go` (its own package; build tags `integration` and `entra`)
+exercises the Entra backend (`internal/controller`, `internal/idpclient`)
+against a fake Microsoft Graph and a fake Entra token endpoint that the test
+serves itself on one TLS server at this host's private IPv4 address (never
+loopback, which `pkg/egress` blocks in both modes), with
+`EGRESS_MODE=allow-private` and the fake's certificate as the trust root, both in
+the test's own wiring. There is no Graph emulator to pin. It needs no
+environment variable and no container.
+
+- The probe gets a token and lists applications; a refused token and an override
+  in strict mode are fixed texts.
+- An `OidcClient` is made Ready, its binding Secret holds the application ID and
+  the secret, a redirect URI change reaches the application and keeps the secret,
+  a rotation adds a second secret and keeps the first through the grace period,
+  and deleting the claim removes the application.
+
+What the fakes cannot check, so no test here does: real Graph and Entra
+behaviour, admin consent and the permission model, conditional access, Workload
+Identity federation and the strict-mode path to Microsoft (NFR-0006).
+
+```sh
+go test -tags integration,entra -count=1 ./test/integration/entra/...
+```

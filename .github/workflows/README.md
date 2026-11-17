@@ -32,6 +32,12 @@
   `EGRESS_MODE=allow-private` set by the test itself, lints
   `test/integration/cognito` with the tags `integration,cognito` and runs it. It
   needs no Keycloak and no credentials; what moto cannot check is NFR-0005.
+  Its `entra` job (the `Entra` backend) starts no container: there is no Graph
+  emulator, so `test/integration/entra` serves a fake Graph and a fake Entra token
+  endpoint itself, over TLS at the runner's private address, with
+  `EGRESS_MODE=allow-private` in the test's own wiring. It lints the package with
+  the tags `integration,entra` and runs it; what the fakes cannot check is
+  NFR-0006.
 - `release-extras.yml` — manually dispatched with a `tag` input, right after
   each `Release`: `gh workflow run release-extras.yml -f tag=vX.Y.Z`. Publishes
   the Helm chart (OCI), the OLM bundle image and the file-based catalog image

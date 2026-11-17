@@ -50,6 +50,7 @@ func TestEndpointIsTheKeycloakBaseURLOrTheRegistrationEndpoint(t *testing.T) {
 		{"Keycloak without its block", ProviderConfig{Type: ProviderKeycloak}, ""},
 		{"DynamicRegistration without its block", ProviderConfig{Type: ProviderDynamicRegistration}, ""},
 		{"Cognito has no URL of its own", ProviderConfig{Type: ProviderCognito, Cognito: &CognitoConfig{UserPoolID: "eu-west-1_Ab"}}, ""},
+		{"Entra has no URL of its own", ProviderConfig{Type: ProviderEntra, Entra: &EntraConfig{}}, ""},
 		{"unknown type", ProviderConfig{Type: "Other", Keycloak: &KeycloakConfig{BaseURL: "https://x"}}, ""},
 	} {
 		g.Expect(tc.config.Endpoint()).To(Equal(tc.want), tc.name)

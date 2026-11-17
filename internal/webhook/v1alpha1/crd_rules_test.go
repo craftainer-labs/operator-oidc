@@ -86,6 +86,32 @@ var _ = Describe("The oidc.craftainer.dev CRDs", func() {
 			},
 		}
 	}
+	entra := func() oidcv1alpha1.ProviderConfig {
+		return oidcv1alpha1.ProviderConfig{
+			Type: oidcv1alpha1.ProviderEntra,
+			Entra: &oidcv1alpha1.EntraConfig{
+				AzureClusterBlock: cloud.AzureClusterBlock{AzureBlock: cloud.AzureBlock{TenantID: "11111111-2222-3333-4444-555555555555"}},
+			},
+		}
+	}
+	clusterEntra := func(name string) *oidcv1alpha1.ClusterIdentityProvider {
+		return &oidcv1alpha1.ClusterIdentityProvider{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec: oidcv1alpha1.ClusterIdentityProviderSpec{
+				ProviderConfig:    entra(),
+				AllowedNamespaces: common.AllowedNamespaces{From: common.NamespacesAll},
+			},
+		}
+	}
+	namespacedEntra := func(name string) *oidcv1alpha1.IdentityProvider {
+		return &oidcv1alpha1.IdentityProvider{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec: oidcv1alpha1.IdentityProviderSpec{
+				ProviderConfig: entra(),
+				Credentials:    &cloud.NamespacedCredentials{Source: cloud.SourceSecret, SecretRef: &cloud.SecretRef{Name: "azure"}},
+			},
+		}
+	}
 	clusterProvider := func(name string) *oidcv1alpha1.ClusterIdentityProvider {
 		return &oidcv1alpha1.ClusterIdentityProvider{
 			ObjectMeta: metav1.ObjectMeta{Name: name},
@@ -345,6 +371,106 @@ var _ = Describe("The oidc.craftainer.dev CRDs", func() {
 			p := namespacedCognito("admin")
 			p.Spec.AdminCredentialsSecretRef = &common.AdminSecretRef{Name: "admin"}
 			rejected(create(p), "adminCredentialsSecretRef is required, except for type Cognito")
+		})
+	})
+
+	Describe("An Entra ClusterIdentityProvider", func() {
+		It("is admitted with workload identity or a Secret, and has no issuer or admin Secret", func() {
+			Expect(create(clusterEntra("wi"))).To(Succeed())
+			p := clusterEntra("secret")
+			p.Spec.Credentials = &cloud.Credentials{Source: cloud.SourceSecret, SecretRef: &cloud.SecretRef{Name: "azure", Namespace: "craftainer-system"}}
+			Expect(create(p)).To(Succeed())
+			got := &oidcv1alpha1.ClusterIdentityProvider{}
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: "secret"}, got)).To(Succeed())
+			Expect(got.Spec.AllowedScopes).To(Equal([]oidcv1alpha1.Scope{"openid", "profile", "email"}))
+			Expect(got.Spec.Issuer).To(BeEmpty())
+			Expect(got.GetEndpoint()).To(BeEmpty())
+		})
+
+		It("forbids the admin Secret and the issuer, which is derived", func() {
+			p := clusterEntra("admin")
+			p.Spec.AdminCredentialsSecretRef = &common.AdminSecretRef{Name: "admin", Namespace: "craftainer-system"}
+			rejected(create(p), "except for type Cognito or Entra")
+
+			p = clusterEntra("issuer")
+			p.Spec.Issuer = "https://login.microsoftonline.com/11111111-2222-3333-4444-555555555555/v2.0"
+			rejected(create(p), "forbidden for Cognito and Entra")
+		})
+
+		It("needs the entra block and nothing else, with a valid tenant, and no subscription or resource group", func() {
+			p := clusterEntra("no-block")
+			p.Spec.Entra = nil
+			rejected(create(p), "exactly the block matching type must be set")
+
+			p = clusterEntra("two-blocks")
+			p.Spec.Keycloak = keycloak().Keycloak
+			rejected(create(p), "exactly the block matching type must be set")
+
+			p = clusterEntra("cognito-block")
+			p.Spec.Cognito = cognito().Cognito
+			rejected(create(p), "exactly the block matching type must be set")
+
+			p = clusterEntra("bad-tenant")
+			p.Spec.Entra.TenantID = "contoso"
+			rejected(create(p), "tenantID")
+
+			p = clusterEntra("subscription")
+			p.Spec.Entra.SubscriptionID = "11111111-2222-3333-4444-555555555555"
+			rejected(create(p), "subscriptionID and resourceGroup are not used")
+
+			p = clusterEntra("group")
+			p.Spec.Entra.ResourceGroup = "rg"
+			rejected(create(p), "subscriptionID and resourceGroup are not used")
+
+			p = clusterEntra("override")
+			p.Spec.Entra.EndpointOverride = "https://10.0.0.5:8443"
+			Expect(create(p)).To(Succeed())
+		})
+
+		It("keeps the type immutable, and the entra block can be neither removed nor added to another type", func() {
+			p := clusterEntra("pinned-entra")
+			Expect(create(p)).To(Succeed())
+			p.Spec.ProviderConfig = keycloak()
+			p.Spec.AdminCredentialsSecretRef = &common.AdminSecretRef{Name: "admin", Namespace: "craftainer-system"}
+			rejected(k8sClient.Update(ctx, p), "type is immutable")
+
+			q := clusterEntra("block-removed")
+			Expect(create(q)).To(Succeed())
+			q.Spec.Entra = nil
+			rejected(k8sClient.Update(ctx, q), "exactly the block matching type must be set")
+
+			k := clusterProvider("entra-block-added")
+			Expect(create(k)).To(Succeed())
+			k.Spec.Entra = entra().Entra
+			rejected(k8sClient.Update(ctx, k), "exactly the block matching type must be set")
+		})
+	})
+
+	Describe("An Entra IdentityProvider", func() {
+		It("is admitted with a Secret in its own namespace", func() {
+			Expect(create(namespacedEntra("secret"))).To(Succeed())
+		})
+
+		It("cannot use the operator's workload identity and needs credentials", func() {
+			p := namespacedEntra("no-creds")
+			p.Spec.Credentials = nil
+			rejected(create(p), "must set credentials with source Secret")
+
+			p = namespacedEntra("wi")
+			p.Spec.Credentials = &cloud.NamespacedCredentials{Source: cloud.SourceWorkloadIdentity}
+			rejected(create(p), "a namespaced server must use source Secret")
+		})
+
+		It("has no endpoint override, which is for cluster providers", func() {
+			p := namespacedEntra("override")
+			p.Spec.Entra.EndpointOverride = "https://10.0.0.5:8443"
+			rejected(create(p), "entra.endpointOverride is only for a cluster-scoped provider")
+		})
+
+		It("forbids the admin Secret", func() {
+			p := namespacedEntra("admin")
+			p.Spec.AdminCredentialsSecretRef = &common.AdminSecretRef{Name: "admin"}
+			rejected(create(p), "except for type Cognito or Entra")
 		})
 	})
 

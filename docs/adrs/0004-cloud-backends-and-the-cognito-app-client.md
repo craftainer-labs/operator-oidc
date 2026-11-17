@@ -1,8 +1,8 @@
-# 0004. Manage cloud-hosted identity providers through the cloud API, starting with AWS Cognito
+# 0004. Manage cloud-hosted identity providers through the cloud API: AWS Cognito and Microsoft Entra
 
 ## Status
 
-Proposed
+Accepted
 
 ## Context
 
@@ -15,6 +15,10 @@ servers (`common.CloudServerCommon`, `server.ResolveCloud`, `CloudProber`,
 `ServerStatus.Discovered`, `lifecycle.NonRotator`, `lifecycle.BindingRebuilder`;
 its ADR 0002, section 16) and the egress-checked AWS client of `pkg/cloud`.
 
+Microsoft Entra is the second cloud backend, added in NKoidc-2. Its application
+registrations are managed through Microsoft Graph, under an Entra identity, in a
+tenant the administrator owns.
+
 Cognito differs from the other two backends in ways that shape the design:
 
 - An app client has no tag or attribute, so no ownership marker.
@@ -23,6 +27,15 @@ Cognito differs from the other two backends in ways that shape the design:
 - `DescribeUserPoolClient` returns the client's secret at any time, so the
   binding Secret holds nothing the pool does not report again.
 - `UpdateUserPoolClient` resets every field it is not given.
+
+Entra differs from Cognito in the points below:
+
+- An application registration has no tag the operator may rely on for ownership
+  (the drafts of ADR 0002 section 16.6 say none), and its client secrets are
+  readable only when issued.
+- An application holds several client secrets, so a rotation can overlap.
+- Graph is not an AWS-style service with a generated SDK worth linking: five
+  stable v1.0 calls matter.
 
 ## Decision
 
@@ -61,6 +74,50 @@ Cognito differs from the other two backends in ways that shape the design:
   length limit alone, because the authorization, token and user info URLs are
   built from it.
 
+### Microsoft Entra
+
+- **A fourth provider type, `Entra`, with an `entra` block** (`tenantID`, and
+  `endpointOverride` on the cluster kind only; the lib's `AzureClusterBlock`) on
+  both provider kinds. `subscriptionID` and `resourceGroup`, which the ARM-based
+  operators need, are forbidden by CEL. The issuer is derived from the tenant, so
+  `issuer` and `adminCredentialsSecretRef` are forbidden; `credentials` is the
+  library's (Azure Workload Identity by default, or a Secret with `clientId` and
+  `clientSecret`; a namespaced provider must name a Secret). The rules that the
+  block matches `type` and that `type` cannot change also mean the block can be
+  neither added to another type nor removed.
+- **Graph REST over `net/http` and the egress policy, no `msgraph-sdk-go`.**
+  Create, update and delete of an application, `addPassword` and
+  `removePassword` do not justify about 24 modules and a generated model of all
+  of Graph. Tokens come from azidentity through the library's `cloud.Egress.Azure`
+  (workload identity or client secret), whose HTTP client dials through the
+  policy; the Graph host is `graph.microsoft.com`, or the `endpointOverride` in
+  tests. Every Graph answer is read for the few fields used, IDs are checked as
+  GUIDs before they reach a path, and an error carries a status category, never
+  the service's own words.
+- **The probe needs no extra permission.** It gets a token and lists at most one
+  application the identity owns; the permission is `Application.ReadWrite.OwnedBy`
+  (admin consent), which the operator needs anyway. `/v1.0/organization` would
+  need `Organization.Read.All`. `status.discovered` holds `resourceId` (the
+  tenant ID) and `endpoint` (the authority host); there is no region, and no
+  account ID.
+- **Found by object ID, never adopted** (as for Cognito): no tag or note is
+  written to the application. A create whose status write fails is deleted again.
+- **The application is exactly its claim.** Display name, audience
+  (`AzureADMyOrg`), the redirect URIs of both platforms, the logout URL and the
+  public flag are sent whole and compared. A changed `public` is a refused
+  update. The claim's scopes must be OIDC scopes (`requiredResourceAccess`, API
+  permissions and consent are not managed), and at most one post-logout redirect
+  URI is allowed (the logout URL).
+- **A real `Rotator`.** `RotateBegin` calls `addPassword` (named
+  `craftainer-<sequence>`) and returns the new key ID as the generation, after
+  removing a secret of the same name that a crashed attempt left; `RotateFinish`
+  calls `removePassword` for every secret but the active generation's, which also
+  retires the secret `Create` issued (the first rotation's previous generation,
+  which the status never names) and a leaked one. A binding Secret that is gone
+  is written again by the library through a rotation, since a secret is not
+  readable again. This is the existing claim semantics of a Keycloak client on a
+  new backend, not a new behaviour.
+
 ## Consequences
 
 - A tenant cannot end up with a client the operator cannot delete, and the
@@ -73,3 +130,8 @@ Cognito differs from the other two backends in ways that shape the design:
 - Every Cognito call goes through the egress policy; `endpointOverride` is
   honoured only with `EGRESS_MODE=allow-private`, for emulators.
 - What the moto emulator cannot check is in NFR-0005.
+- A cloud provider that is a Microsoft Entra tenant is tested against a fake
+  Graph and a fake Entra token endpoint, since no emulator exists; what that
+  cannot check is in NFR-0006.
+- A secret on an Entra application can be rotated with an overlap, which a
+  Cognito app client cannot (it is a `NonRotator`).

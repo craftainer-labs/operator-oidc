@@ -74,6 +74,9 @@ var providerCases = []struct {
 	{name: "valid Cognito, whose issuer is derived", cfg: oidcv1alpha1.ProviderConfig{
 		Type: oidcv1alpha1.ProviderCognito, Cognito: &oidcv1alpha1.CognitoConfig{UserPoolID: "eu-west-1_AbCdEf123", Domain: "team-auth"},
 	}},
+	{name: "valid Entra, whose issuer is derived", cfg: oidcv1alpha1.ProviderConfig{
+		Type: oidcv1alpha1.ProviderEntra, Entra: &oidcv1alpha1.EntraConfig{},
+	}},
 	{name: "issuer over http", cfg: providerConfig("http://sso.example.com/realms/x", goodBase), field: "spec.issuer", message: "https URL"},
 	{name: "issuer without a host", cfg: providerConfig("https:///realms/x", goodBase), field: "spec.issuer", message: "absolute URL with a host"},
 	{name: "issuer with userinfo", cfg: providerConfig("https://user:hunter2@sso.example.com/x", goodBase), field: "spec.issuer", message: "must not carry credentials"},

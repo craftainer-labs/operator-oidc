@@ -2,6 +2,7 @@
 resources:
 - oidc_v1alpha1_clusteridentityprovider.yaml
 - oidc_v1alpha1_clusteridentityprovider_cognito.yaml
+- oidc_v1alpha1_clusteridentityprovider_entra.yaml
 - oidc_v1alpha1_identityprovider.yaml
 - oidc_v1alpha1_oidcclient.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

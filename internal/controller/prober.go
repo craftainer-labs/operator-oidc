@@ -25,6 +25,12 @@ import (
 // records the pool in status.discovered; a failure shows through the
 // library's own reasons.
 //
+// A provider of type Entra is healthy when the operator's identity gets a
+// Graph token and may list the applications it owns (the permission it needs
+// anyway, Application.ReadWrite.OwnedBy). The probe records the tenant and the
+// authority host in status.discovered; the endpoints of status.discovery follow
+// from the tenant ID.
+//
 // It builds its clients through the egress policy and the provider's own proxy
 // and TLS settings, with connections of their own: it never takes a client from
 // the claims' ProviderCache and never puts one there, so a probe can neither pin
@@ -53,6 +59,14 @@ func (p Prober) ProbeCloud(ctx context.Context, srv server.CloudServer, conn ser
 			return probe.CloudResult{}, categoryOnly(err)
 		}
 		record(ref.status, cognitoDiscovery(ref.spec.Cognito))
+		return probe.CloudResult{Discovered: disc}, nil
+	}
+	if ref.spec.Type == oidcv1alpha1.ProviderEntra {
+		disc, err := p.Config.discoverEntra(ctx, ref, conn)
+		if err != nil {
+			return probe.CloudResult{}, categoryOnly(err)
+		}
+		record(ref.status, entraDiscovery(ref.spec.Entra))
 		return probe.CloudResult{Discovered: disc}, nil
 	}
 	return probe.CloudResult{}, p.probeDiscovery(ctx, ref, conn.Connection)
