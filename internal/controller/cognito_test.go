@@ -715,12 +715,11 @@ func TestCognitoErr(t *testing.T) {
 	}
 }
 
-// sameSet compares values, not multiplicity (Cognito keeps these lists as sets),
-// so lists of the same length with different members differ even when each
-// member of one is found in the other once.
-func TestSameSetDuplicates(t *testing.T) {
+// sameSet compares values, not multiplicity (Cognito keeps these lists as
+// sets): lists with different members differ, however long they are.
+func TestSameSetIgnoresMultiplicity(t *testing.T) {
 	if sameSet([]string{"a", "b"}, []string{"a", "a"}) || sameSet([]string{"a", "a"}, []string{"a", "b"}) {
-		t.Error("a list with a duplicate equals one without")
+		t.Error("lists with different members are equal")
 	}
 	if !sameSet([]string{"a", "b"}, []string{"b", "a"}) || !sameSet([]string{"a", "a"}, []string{"a"}) {
 		t.Error("the same values differ")

@@ -166,7 +166,7 @@ func TestCognitoProbeAgainstMoto(t *testing.T) {
 		t.Fatalf("probe: %v", err)
 	}
 	d := res.Discovered
-	if d["resourceId"] != h.poolID || d["region"] != motoRegion || d["endpoint"] == "" {
+	if d["resourceId"] != h.poolID || d["region"] != motoRegion || d["endpoint"] == "" || len(d) != 3 {
 		t.Errorf("discovered = %v", d)
 	}
 
