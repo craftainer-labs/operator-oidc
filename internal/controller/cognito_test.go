@@ -700,6 +700,8 @@ func TestCognitoErr(t *testing.T) {
 		"cancelled":         {context.Canceled, true},
 		"a network error":   {&timeoutError{}, true},
 		"refused":           {errRefused, false},
+		"blocked":           {errors.Join(&timeoutError{}, egress.ErrBlocked), false},
+		"slow down":         {&apiErr{code: "SlowDown", status: 400}, true},
 		"denied":            {&apiErr{code: "NotAuthorizedException", status: 400}, false},
 	} {
 		err := cognitoErr(tc.err)
@@ -710,6 +712,17 @@ func TestCognitoErr(t *testing.T) {
 		if strings.Contains(err.Error(), "AKIA") {
 			t.Errorf("%s: the SDK's text leaked: %v", name, err)
 		}
+	}
+}
+
+// sameSet takes duplicates into account: lists of the same length that differ
+// in multiplicity are different.
+func TestSameSetDuplicates(t *testing.T) {
+	if sameSet([]string{"a", "b"}, []string{"a", "a"}) || sameSet([]string{"a", "a"}, []string{"a", "b"}) {
+		t.Error("a list with a duplicate equals one without")
+	}
+	if !sameSet([]string{"a", "b"}, []string{"b", "a"}) || !sameSet([]string{"a", "a"}, []string{"a"}) {
+		t.Error("the same values differ")
 	}
 }
 

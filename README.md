@@ -205,7 +205,10 @@ the pool.
   (`code` for `authorization_code`, `client_credentials`), the built-in `COGNITO`
   identity provider only, and only the refresh-token auth flow. An update sends
   the whole desired state, because Cognito resets what it is not given; a change
-  made at the pool behind the operator's back is drift and is put right.
+  made at the pool behind the operator's back is drift and is put right. The
+  operator owns the whole app client: a setting it does not manage (token
+  validity, attribute permissions, the default redirect URI) is reset to
+  Cognito's default by the next update, and is not drift on its own.
 - **No webOrigins.** Cognito has no such setting: as for dynamic registration,
   the origins are dropped and the claim gets `WebOriginsIgnored`.
 
@@ -274,9 +277,11 @@ workflow's `cognito` job); NFR-0005 says what that cannot check.
 - **A Cognito client the status never recorded is not adopted.** An app client
   has no tag to hold an ownership marker, so it is found by the client ID in
   `status.externalId` alone. A client of the same name that someone else made is
-  not touched, and the claim makes its own. If the status could not be written
-  after the app client was created, the operator takes the client back, and if
-  that fails too the claim keeps the ID and the next reconcile manages it.
+  not touched, and the claim makes its own. If the status cannot be written
+  after the app client was created, the operator deletes the client again; if
+  that fails too, or the operator stops between the two calls, the app client
+  stays in the pool under the claim's name with live credentials, and an
+  administrator deletes it.
 - **Cognito secrets are not rotated.** The provider is a `lifecycle.NonRotator`:
   `rotationPolicy` does nothing, and the `craftainer.dev/rotate` annotation is
   acknowledged with the `RotationNotApplicable` Event and ignored. Overlapping

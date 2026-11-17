@@ -15,6 +15,7 @@ import (
 
 	"github.com/craftainer-labs/lib-operator-go/pkg/binding"
 	"github.com/craftainer-labs/lib-operator-go/pkg/cloud"
+	"github.com/craftainer-labs/lib-operator-go/pkg/egress"
 	"github.com/craftainer-labs/lib-operator-go/pkg/lifecycle"
 	"github.com/craftainer-labs/lib-operator-go/pkg/server"
 
@@ -85,6 +86,11 @@ func cognitoErr(err error) error {
 	if cognitoNotFound(err) {
 		return fmt.Errorf("%w: the Cognito resource does not exist", idpclient.ErrNotFound)
 	}
+	// A connection the egress policy or the proxy refused will not pass by
+	// itself, whatever net.Error it is wrapped in.
+	if errors.Is(err, egress.ErrBlocked) || errors.Is(err, egress.ErrProxy) || errors.Is(err, egress.ErrProxyUserinfo) {
+		return cloudErr("the connection to the Cognito API was refused by the egress policy")
+	}
 	var api interface{ ErrorCode() string }
 	var resp interface{ HTTPStatusCode() int }
 	status := 0
@@ -94,7 +100,7 @@ func cognitoErr(err error) error {
 	transient := transientCause(err, status)
 	if errors.As(err, &api) {
 		switch api.ErrorCode() {
-		case "TooManyRequestsException", "ThrottlingException", "RequestLimitExceeded", "InternalErrorException", "ServiceUnavailable":
+		case "TooManyRequestsException", "ThrottlingException", "RequestLimitExceeded", "InternalErrorException", "InternalFailure", "ServiceUnavailable", "SlowDown", "RequestTimeout", "RequestTimeoutException":
 			transient = true
 		}
 	}
@@ -271,11 +277,13 @@ func (d *cognitoDriver) updateInput(id string, w clientSpec) *cip.UpdateUserPool
 
 // sameSet reports whether a and b hold the same values, in any order.
 func sameSet[T comparable](a, b []T) bool {
-	if len(a) != len(b) {
-		return false
-	}
 	for _, v := range a {
 		if !slices.Contains(b, v) {
+			return false
+		}
+	}
+	for _, v := range b {
+		if !slices.Contains(a, v) {
 			return false
 		}
 	}
