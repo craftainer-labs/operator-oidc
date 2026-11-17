@@ -427,6 +427,11 @@ func (d *cognitoDriver) update(ctx context.Context, w clientSpec, cur cognitoSta
 
 func (d *cognitoDriver) deleteClient(ctx context.Context, id string) error {
 	_, err := d.api.DeleteUserPoolClient(ctx, &cip.DeleteUserPoolClientInput{UserPoolId: aws.String(d.pool), ClientId: aws.String(id)})
+	// An app client that is already gone is deleted as far as the operator can
+	// tell.
+	if cognitoNotFound(err) {
+		return nil
+	}
 	return cognitoErr(err)
 }
 

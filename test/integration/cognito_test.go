@@ -67,7 +67,6 @@ func motoSuffix(t *testing.T) string {
 // motoHarness is a Cognito provider on moto, the operator's configuration for
 // it and the test's own client of moto, built the way the operator's are.
 type motoHarness struct {
-	cfg      controller.Config
 	api      *cip.Client
 	endpoint string
 	poolID   string

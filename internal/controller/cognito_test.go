@@ -263,15 +263,18 @@ func TestCognitoClientLifecycle(t *testing.T) {
 	}
 	s := o.secret("team", "web")
 	want := map[string]string{
-		"clientId": "client1", "clientSecret": "secret-client1",
+		"clientId":              "client1",
 		"issuer":                "https://cognito-idp.eu-west-1.amazonaws.com/" + testPool,
 		"authorizationEndpoint": "https://team-auth.auth.eu-west-1.amazoncognito.com/oauth2/authorize",
 		"tokenEndpoint":         "https://team-auth.auth.eu-west-1.amazoncognito.com/oauth2/token",
 		"userinfoEndpoint":      "https://team-auth.auth.eu-west-1.amazoncognito.com/oauth2/userInfo",
 		"jwksUri":               "https://cognito-idp.eu-west-1.amazonaws.com/" + testPool + "/.well-known/jwks.json",
 	}
+	if s == nil || string(s.Data["clientSecret"]) != "secret-client1" {
+		t.Fatalf("binding = %v", s)
+	}
 	for k, v := range want {
-		if s == nil || string(s.Data[k]) != v {
+		if string(s.Data[k]) != v {
 			t.Errorf("binding %s = %q, want %q", k, s.Data[k], v)
 		}
 	}
