@@ -1,0 +1,24 @@
+apiVersion: oidc.craftainer.dev/v1alpha1
+kind: ClusterIdentityProvider
+metadata:
+  labels:
+    app.kubernetes.io/name: operator-oidc
+    app.kubernetes.io/managed-by: kustomize
+  name: cognito
+spec:
+  type: Cognito
+  # The issuer is derived from the pool: do not set it.
+  cognito:
+    region: eu-west-1
+    userPoolID: eu-west-1_AbCdEf123
+    # The prefix of an Amazon Cognito domain (no dot), or a custom domain.
+    domain: team-auth
+    # Optional: a role to assume with the operator's own identity.
+    # roleARN: arn:aws:iam::111122223333:role/operator-oidc
+  # No credentials: the operator's workload identity (IRSA or EKS Pod Identity)
+  # is used. A Secret in the operator namespace is the alternative:
+  # credentials: {source: Secret, secretRef: {name: aws-operator, namespace: craftainer-system}}
+  allowedNamespaces:
+    from: Selector
+    selector:
+      matchLabels: {craftainer.dev/oidc: allowed}

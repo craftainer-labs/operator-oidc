@@ -2,11 +2,12 @@ package v1alpha1
 
 import (
 	"github.com/craftainer-labs/lib-operator-go/pkg/apis/common"
+	"github.com/craftainer-labs/lib-operator-go/pkg/cloud"
 )
 
 // ProviderType is how the operator manages clients on the identity provider.
 //
-// +kubebuilder:validation:Enum=Keycloak;DynamicRegistration
+// +kubebuilder:validation:Enum=Keycloak;DynamicRegistration;Cognito
 type ProviderType string
 
 // Values of ProviderType.
@@ -16,6 +17,9 @@ const (
 	// ProviderDynamicRegistration manages clients through OAuth 2.0 dynamic
 	// client registration (RFC 7591) and its management protocol (RFC 7592).
 	ProviderDynamicRegistration ProviderType = "DynamicRegistration"
+	// ProviderCognito manages clients as app clients of an existing Amazon
+	// Cognito user pool, through the Cognito user pools API.
+	ProviderCognito ProviderType = "Cognito"
 )
 
 // Scope is one OAuth 2.0 scope token (RFC 6749, section 3.3): printable ASCII
@@ -88,6 +92,34 @@ type DynamicRegistrationConfig struct {
 	InitialAccessTokenSecretRef *SecretKeyRef `json:"initialAccessTokenSecretRef,omitempty"`
 }
 
+// CognitoConfig is the block of a provider of type Cognito: the existing user
+// pool whose app clients the operator manages. The pool, its hosted-UI domain
+// and the IAM permissions of the operator's identity (cognito-idp:
+// DescribeUserPool, CreateUserPoolClient, DescribeUserPoolClient,
+// UpdateUserPoolClient, DeleteUserPoolClient) are the administrator's: the
+// operator creates none of them. The region and role ARN are the common
+// provider.aws fields of lib-operator-go (ADR 0002, section 16.1); the
+// endpoint override is for emulators and only honoured when the operator runs
+// with EGRESS_MODE=allow-private.
+type CognitoConfig struct {
+	cloud.AWSClusterBlock `json:",inline"`
+
+	// userPoolID is the ID of the user pool, such as eu-west-1_AbCdEf123.
+	//
+	// +kubebuilder:validation:MaxLength=55
+	// +kubebuilder:validation:Pattern=`^[\w-]+_[0-9A-Za-z]+$`
+	UserPoolID string `json:"userPoolID"`
+
+	// domain is the pool's hosted-UI domain: the prefix of an Amazon Cognito
+	// domain (no dot), or a custom domain (with dots). The authorization,
+	// token and user info endpoints of the binding are built from it.
+	//
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=255
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$`
+	Domain string `json:"domain"`
+}
+
 // ProviderConfig is what the two provider kinds share besides the server
 // blocks of lib-operator-go. It has no type-level rules: each kind's spec
 // carries the rules that differ between the cluster and the namespaced kind.
@@ -97,8 +129,12 @@ type ProviderConfig struct {
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="type is immutable"
 	Type ProviderType `json:"type"`
 
-	// issuer is the provider's https issuer URL (the "iss" of its tokens).
-	Issuer HTTPSURL `json:"issuer"`
+	// issuer is the provider's https issuer URL (the "iss" of its tokens). It
+	// is required for Keycloak and DynamicRegistration and forbidden for
+	// Cognito, whose issuer the operator derives from the pool.
+	//
+	// +optional
+	Issuer HTTPSURL `json:"issuer,omitempty"`
 
 	// keycloak is required when type is Keycloak and forbidden otherwise.
 	//
@@ -110,6 +146,12 @@ type ProviderConfig struct {
 	//
 	// +optional
 	DynamicRegistration *DynamicRegistrationConfig `json:"dynamicRegistration,omitempty"`
+
+	// cognito is required when type is Cognito and forbidden otherwise. The
+	// cloud credentials of the operator are the provider's credentials field.
+	//
+	// +optional
+	Cognito *CognitoConfig `json:"cognito,omitempty"`
 
 	// allowedScopes limits the scopes a client may request.
 	//
@@ -171,4 +213,13 @@ type IdentityProviderStatus struct {
 	//
 	// +optional
 	Discovery *Discovery `json:"discovery,omitempty"`
+}
+
+// credentialsSecret is the Secret credentials names, or empty for workload
+// identity or no credentials.
+func credentialsSecret(c *cloud.Credentials) (name, namespace string) {
+	if c == nil || c.Source != cloud.SourceSecret || c.SecretRef == nil {
+		return "", ""
+	}
+	return c.SecretRef.Name, c.SecretRef.Namespace
 }

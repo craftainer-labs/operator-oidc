@@ -61,7 +61,9 @@ spec:
             description: spec defines the desired state of ClusterIdentityProvider
             properties:
               adminCredentialsSecretRef:
-                description: AdminCredentialsSecretRef names the admin credentials.
+                description: |-
+                  AdminCredentialsSecretRef names the data-plane admin credentials. Unset
+                  on a server that logs in with its cloud identity.
                 properties:
                   key:
                     description: Key limits the credentials to one key of the Secret.
@@ -166,6 +168,93 @@ spec:
                 maxItems: 50
                 type: array
                 x-kubernetes-list-type: set
+              cognito:
+                description: |-
+                  cognito is required when type is Cognito and forbidden otherwise. The
+                  cloud credentials of the operator are the provider's credentials field.
+                properties:
+                  domain:
+                    description: |-
+                      domain is the pool's hosted-UI domain: the prefix of an Amazon Cognito
+                      domain (no dot), or a custom domain (with dots). The authorization,
+                      token and user info endpoints of the binding are built from it.
+                    maxLength: 255
+                    minLength: 1
+                    pattern: ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$
+                    type: string
+                  endpointOverride:
+                    description: |-
+                      EndpointOverride points the SDK at an emulator. It is honoured only when
+                      the operator runs with EGRESS_MODE=allow-private; otherwise the server is
+                      Ready=False with reason EndpointOverrideForbidden. For tests, never for
+                      production.
+                    maxLength: 2048
+                    pattern: ^https?://[^\s]+$
+                    type: string
+                  region:
+                    description: Region is the AWS region; the partition follows from
+                      it.
+                    maxLength: 32
+                    pattern: ^[a-z]{2}(-[a-z]+)+-[0-9]+$
+                    type: string
+                  roleARN:
+                    description: RoleARN, when set, is assumed with the source credentials.
+                    maxLength: 2048
+                    type: string
+                    x-kubernetes-validations:
+                    - message: 'roleARN must start with arn:'
+                      rule: self.startsWith('arn:')
+                  userPoolID:
+                    description: userPoolID is the ID of the user pool, such as eu-west-1_AbCdEf123.
+                    maxLength: 55
+                    pattern: ^[\w-]+_[0-9A-Za-z]+$
+                    type: string
+                required:
+                - domain
+                - region
+                - userPoolID
+                type: object
+              credentials:
+                description: |-
+                  credentials say where the operator gets its cloud credential for a
+                  provider of type Cognito: its own workload identity (IRSA or EKS Pod
+                  Identity, the default) or a Secret in the operator namespace holding the
+                  keys accessKeyId, secretAccessKey and optionally sessionToken.
+                properties:
+                  secretRef:
+                    description: SecretRef is required if and only if Source is Secret.
+                    properties:
+                      name:
+                        description: Name is the Secret's name.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      namespace:
+                        description: |-
+                          Namespace is the Secret's namespace: required on a cluster server (the
+                          controller accepts only the operator's own namespace), forbidden on a
+                          namespaced one.
+                        maxLength: 63
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  source:
+                    default: WorkloadIdentity
+                    description: Source is WorkloadIdentity (default) or Secret.
+                    enum:
+                    - WorkloadIdentity
+                    - Secret
+                    type: string
+                required:
+                - source
+                type: object
+                x-kubernetes-validations:
+                - message: secretRef is required when source is Secret and forbidden
+                    otherwise
+                  rule: 'self.source == ''Secret'' ? has(self.secretRef) : !has(self.secretRef)'
+                - message: secretRef.namespace is required on a cluster server
+                  rule: self.source != 'Secret' || !has(self.secretRef) || has(self.secretRef.namespace)
               dynamicRegistration:
                 description: |-
                   dynamicRegistration is required when type is DynamicRegistration and
@@ -225,8 +314,10 @@ spec:
                 - message: healthCheckInterval must be between 10s and 1h
                   rule: duration(self) >= duration('10s') && duration(self) <= duration('1h')
               issuer:
-                description: issuer is the provider's https issuer URL (the "iss"
-                  of its tokens).
+                description: |-
+                  issuer is the provider's https issuer URL (the "iss" of its tokens). It
+                  is required for Keycloak and DynamicRegistration and forbidden for
+                  Cognito, whose issuer the operator derives from the pool.
                 maxLength: 512
                 minLength: 1
                 type: string
@@ -345,25 +436,36 @@ spec:
                 enum:
                 - Keycloak
                 - DynamicRegistration
+                - Cognito
                 type: string
                 x-kubernetes-validations:
                 - message: type is immutable
                   rule: self == oldSelf
             required:
-            - adminCredentialsSecretRef
             - allowedNamespaces
-            - issuer
             - type
             type: object
             x-kubernetes-validations:
             - message: 'exactly the block matching type must be set: keycloak for
-                Keycloak, dynamicRegistration for DynamicRegistration'
-              rule: 'self.type == ''Keycloak'' ? (has(self.keycloak) && !has(self.dynamicRegistration))
-                : (has(self.dynamicRegistration) && !has(self.keycloak))'
+                Keycloak, dynamicRegistration for DynamicRegistration, cognito for
+                Cognito'
+              rule: 'self.type == ''Keycloak'' ? (has(self.keycloak) && !has(self.dynamicRegistration)
+                && !has(self.cognito)) : self.type == ''DynamicRegistration'' ? (has(self.dynamicRegistration)
+                && !has(self.keycloak) && !has(self.cognito)) : (has(self.cognito)
+                && !has(self.keycloak) && !has(self.dynamicRegistration))'
+            - message: issuer is required for Keycloak and DynamicRegistration and
+                forbidden for Cognito (it is derived from the user pool)
+              rule: 'self.type == ''Cognito'' ? !has(self.issuer) : has(self.issuer)'
+            - message: credentials is only for a cloud provider (type Cognito)
+              rule: '!has(self.credentials) || self.type == ''Cognito'''
+            - message: adminCredentialsSecretRef is required, except for type Cognito,
+                where it is forbidden (the cloud credential is credentials)
+              rule: 'self.type == ''Cognito'' ? !has(self.adminCredentialsSecretRef)
+                : has(self.adminCredentialsSecretRef)'
             - message: adminCredentialsSecretRef.namespace is required on a cluster-scoped
                 server
-              rule: has(self.adminCredentialsSecretRef.namespace) && self.adminCredentialsSecretRef.namespace
-                != ''
+              rule: '!has(self.adminCredentialsSecretRef) || (has(self.adminCredentialsSecretRef.namespace)
+                && size(self.adminCredentialsSecretRef.namespace) > 0)'
           status:
             description: status defines the observed state of ClusterIdentityProvider
             properties:
@@ -428,6 +530,20 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              discovered:
+                additionalProperties:
+                  type: string
+                description: |-
+                  Discovered is what the operator read from the cloud for a cloud server:
+                  endpoint, port, resourceId, accountId and region (ADR 0002, section
+                  16.1). The probe (a cloud Prober of package probe) or the operator's
+                  controller fills it; claims read it from the cached server. A
+                  self-hosted server leaves it empty.
+                maxProperties: 10
+                type: object
+                x-kubernetes-validations:
+                - message: values are at most 512 characters
+                  rule: self.all(k, size(self[k]) <= 512)
               discovery:
                 description: |-
                   discovery is what the provider's discovery document reported at the last

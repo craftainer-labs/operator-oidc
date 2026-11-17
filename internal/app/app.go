@@ -171,6 +171,7 @@ var ErrNoOperatorNamespace = errors.New("cannot determine the operator namespace
 // controllerSettings are the checked settings the controllers are built from.
 type controllerSettings struct {
 	egress    egress.Policy
+	mode      egress.Mode
 	namespace string
 }
 
@@ -191,7 +192,7 @@ func (s *settings) controllerSettings() (controllerSettings, error) {
 		return controllerSettings{}, ErrNoOperatorNamespace
 	}
 	ctrl.Log.WithName("setup").Info("controller settings", "egressMode", string(mode), "operatorNamespace", ns)
-	return controllerSettings{egress: egress.NewPolicy(mode), namespace: ns}, nil
+	return controllerSettings{egress: egress.NewPolicy(mode), mode: mode, namespace: ns}, nil
 }
 
 // Option adjusts the manager's options; tests use it, the binary passes none.
@@ -328,15 +329,15 @@ func setup(mgr ctrl.Manager, webhooks bool, cs controllerSettings) error {
 	conns := controller.NewProviderCache(providerCacheIdle)
 	cfg := controller.Config{
 		Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), Recorder: mgr.GetEventRecorder(EventRecorderName),
-		ManagedBy: EventRecorderName, OperatorNamespace: cs.namespace, Egress: cs.egress, Cache: conns,
+		ManagedBy: EventRecorderName, OperatorNamespace: cs.namespace, Egress: cs.egress, EgressMode: cs.mode, Cache: conns,
 	}
 	steps = append(steps,
 		setupStep{"provider connection sweeper", func(mgr ctrl.Manager) error { return mgr.Add(conns) }},
 		setupStep{"OidcClient controller", (&controller.ClientReconciler{Config: cfg}).SetupWithManager},
 		setupStep{"ClusterIdentityProvider probe", providerProbe(mgr, cfg,
-			func() probe.Server { return &oidcv1alpha1.ClusterIdentityProvider{} })},
+			func() probe.CloudServer { return &oidcv1alpha1.ClusterIdentityProvider{} })},
 		setupStep{"IdentityProvider probe", providerProbe(mgr, cfg,
-			func() probe.Server { return &oidcv1alpha1.IdentityProvider{} })},
+			func() probe.CloudServer { return &oidcv1alpha1.IdentityProvider{} })},
 	)
 	// +kubebuilder:scaffold:builder
 	return runSteps(mgr, steps)
@@ -354,12 +355,12 @@ func cacheByObject() map[client.Object]cache.ByObject {
 
 // providerProbe returns the setup of the probe.Reconciler of one provider kind,
 // which writes the kind's status (serverVersion, lastProbeTime, Ready,
-// ServerReachable and discovery) from a request of its own. Its Client reads
+// ServerReachable, discovery and, for a cloud provider, discovered) from a request of its own. Its Client reads
 // Secrets and ConfigMaps live (managerOptions), and its watches on them go
 // through the manager's caches, which hold only the managed-by labelled ones.
-func providerProbe(mgr ctrl.Manager, cfg controller.Config, kind func() probe.Server) func(ctrl.Manager) error {
+func providerProbe(mgr ctrl.Manager, cfg controller.Config, kind func() probe.CloudServer) func(ctrl.Manager) error {
 	return (&probe.Reconciler{
-		Client: mgr.GetClient(), New: kind, Prober: controller.Prober{Config: cfg},
+		Client: mgr.GetClient(), NewCloud: kind, CloudProber: controller.Prober{Config: cfg},
 		Options: probe.Options{OperatorNamespace: cfg.OperatorNamespace},
 	}).SetupWithManager
 }

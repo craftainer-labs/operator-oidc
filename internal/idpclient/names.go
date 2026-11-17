@@ -29,3 +29,14 @@ func DCRClientName(ns, name string) string {
 func Marker(ns, name, uid string) string {
 	return ns + "/" + name + "/" + uid
 }
+
+// maxCognitoClientNameLen is the longest app client name Cognito accepts.
+const maxCognitoClientNameLen = 128
+
+// CognitoClientName is the name of the Cognito app client of an OidcClient.
+// An app client has no tag or description to hold an ownership marker, and the
+// client ID Cognito assigns is what finds it, so the name is only a label: it
+// carries the short hash, as ADR 0002 section 16.6 says.
+func CognitoClientName(ns, name string) string {
+	return naming.Tenant(ns, name, maxCognitoClientNameLen, "-", naming.HashShort)
+}

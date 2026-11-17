@@ -6,7 +6,8 @@
 A Kubernetes operator that registers OpenID Connect clients on
 [Keycloak](https://www.keycloak.org/) and on any identity provider that
 supports dynamic client registration ([RFC 7591](https://www.rfc-editor.org/rfc/rfc7591)
-and [RFC 7592](https://www.rfc-editor.org/rfc/rfc7592)). A team claims a client
+and [RFC 7592](https://www.rfc-editor.org/rfc/rfc7592)), and as app clients of an
+existing [AWS Cognito](https://aws.amazon.com/cognito/) user pool. A team claims a client
 with an `OidcClient`; the operator creates it on the provider and writes its
 client id and secret to a binding Secret. It is built on
 [`lib-operator-go`](https://github.com/craftainer-labs/lib-operator-go) and
@@ -36,6 +37,9 @@ Both provider kinds set a `type` (immutable) and the block that matches it:
   clients in the realm.
 - `DynamicRegistration`: `dynamicRegistration.registrationEndpoint` and an
   optional `initialAccessTokenSecretRef`.
+
+- `Cognito`: `cognito.region`, `cognito.userPoolID` and `cognito.domain`, and no
+  `issuer` or admin Secret (see "Cognito clients" below).
 
 They also set `issuer`, `allowedScopes`, and optionally `tls` (CA bundle, server
 name, minimum version), `proxyURL` and `healthCheckInterval`. Every URL must be
@@ -161,6 +165,56 @@ a probe found them); never to a status, an Event or a log.
   does, and refuses a claim that broke them with a fixed text before it contacts
   the provider.
 
+## Cognito clients
+
+A provider of type `Cognito` manages the app clients of a user pool that already
+exists ([sample](config/samples/oidc_v1alpha1_clusteridentityprovider_cognito.yaml)).
+The pool, its hosted-UI domain and the IAM permissions of the operator's
+identity are the administrator's: the operator creates none of them. The
+operator needs `cognito-idp:DescribeUserPool`, `CreateUserPoolClient`,
+`DescribeUserPoolClient`, `UpdateUserPoolClient` and `DeleteUserPoolClient` on
+the pool.
+
+- **Credentials.** `credentials` is the operator's cloud credential: its own
+  workload identity (IRSA or EKS Pod Identity, the default) or a Secret in the
+  operator namespace with `accessKeyId`, `secretAccessKey` and optionally
+  `sessionToken`. A namespaced `IdentityProvider` of this type must use a Secret
+  in its own namespace and cannot use the operator's workload identity. A
+  `roleARN` is assumed with those credentials. `adminCredentialsSecretRef` and
+  `issuer` are forbidden.
+- **Derived values.** The issuer is
+  `https://cognito-idp.<region>.amazonaws.com/<userPoolID>`. `domain` is either
+  the prefix of an Amazon Cognito domain (no dot, giving
+  `<domain>.auth.<region>.amazoncognito.com`) or a custom domain (with dots). The
+  authorization, token and user info endpoints are built from it and the
+  signing keys come from the issuer's `/.well-known/jwks.json`; they are in
+  `status.discovery` and in the binding Secret. `domain` is held to a hostname
+  pattern, stricter than a length limit alone, so the derived URLs stay valid.
+  The operator does not check that the domain exists.
+- **Health.** The probe describes the user pool with the operator's credentials
+  and records `status.discovered` (`region`, `resourceId` and `endpoint`, the
+  hosted-UI host). A failure (the pool does not exist, the credentials do not
+  work, the API refused or timed out, `endpointOverride` is not allowed) shows
+  through the library's `Ready` and `ServerReachable` reasons with a coarse
+  message, and the log carries the same category: never an ARN, an account, a
+  credential or the SDK's own words.
+- **App clients.** `status.externalName` is the client name and
+  `status.externalId` the app client ID Cognito assigned. A confidential claim
+  creates the client with a secret, a `public: true` claim without. The client
+  is exactly its claim: callback and logout URLs, scopes, and the OAuth flows
+  (`code` for `authorization_code`, `client_credentials`), the built-in `COGNITO`
+  identity provider only, and only the refresh-token auth flow. An update sends
+  the whole desired state, because Cognito resets what it is not given; a change
+  made at the pool behind the operator's back is drift and is put right. The
+  operator owns the whole app client: a setting it does not manage (token
+  validity, attribute permissions, the default redirect URI) is reset to
+  Cognito's default by the next update, and is not drift on its own.
+- **No webOrigins.** Cognito has no such setting: as for dynamic registration,
+  the origins are dropped and the claim gets `WebOriginsIgnored`.
+
+The `Cognito` backend is tested against the moto emulator (the `Integration`
+workflow's `cognito` job); NFR-0005 says what that cannot check.
+
 ## Known limits
 
 - **A lost DCR registration is never registered again.** When a
@@ -217,6 +271,30 @@ a probe found them); never to a status, an Event or a log.
     that cannot be deleted: the claim keeps its id, and the next reconcile
     manages the client (or, if the status is still not written, adopts it by
     its ownership marker).
+- **A Cognito app client cannot gain or lose its secret.** Whether it has one is
+  fixed when it is created. A claim whose `public` is changed gets
+  `Synced=False`: delete the claim and create it again (the client ID changes).
+- **A Cognito client the status never recorded is not adopted.** An app client
+  has no tag to hold an ownership marker, so it is found by the client ID in
+  `status.externalId` alone. A client of the same name that someone else made is
+  not touched, and the claim makes its own. If the status cannot be written
+  after the app client was created, the operator deletes the client again; if
+  that fails too, or the operator stops between the two calls, the app client
+  stays in the pool under the claim's name with live credentials, and an
+  administrator deletes it.
+- **Cognito secrets are not rotated.** The provider is a `lifecycle.NonRotator`:
+  `rotationPolicy` does nothing, and the `craftainer.dev/rotate` annotation is
+  acknowledged with the `RotationNotApplicable` Event and ignored. Overlapping
+  rotation needs `AddUserPoolClientSecret`, which is not implemented here (moto
+  does not support it either); to change the secret, delete the claim and
+  create it again.
+- **A lost Cognito binding Secret is rebuilt from the pool.** The claim
+  implements `lifecycle.BindingRebuilder`: when the binding Secret is gone, the
+  operator reads the app client's existing secret with `DescribeUserPoolClient`
+  and writes the Secret again. It never issues a new secret. See ADR 0004.
+- **Cognito scopes are exact.** The client's allowed OAuth scopes are the
+  claim's scopes. A custom scope must exist on a resource server of the pool, or
+  Cognito refuses the request and the claim is `Synced=False`.
 
 ## Settings
 

@@ -64,6 +64,13 @@ func is(target error) func(error) bool {
 	return func(err error) bool { return errors.Is(err, target) }
 }
 
+// isCloudError reports a failure of the cloud API or of the cloud credentials,
+// whose text is already one of a few fixed categories (*CloudError).
+func isCloudError(err error) bool {
+	var e *CloudError
+	return errors.As(err, &e)
+}
+
 // isStatus reports an HTTP answer of the provider that was not a success.
 func isStatus(err error) bool {
 	var e *idpclient.Error
@@ -89,6 +96,10 @@ var rules = []rule{
 	{is(ErrInvalidClient), ""},
 	{is(ErrScopeNotAllowed), ""},
 	{is(ErrBindingNotUsable), ""},
+	{is(ErrCognitoSecret), ""},
+	{isCloudError, ""},
+	{is(server.ErrCredentialsSecretNamespaceForbidden), invalidProvider},
+	{is(server.ErrCredentialsUnavailable), invalidProvider},
 	{is(lifecycle.ErrNameCollision), "a client of that name exists and this claim did not make it"},
 	{is(idpclient.ErrUnknownScope), "a scope of the client is not a client scope of the provider's realm"},
 	{is(idpclient.ErrRegistrationLost), "the provider no longer holds the client's registration"},

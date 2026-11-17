@@ -11,12 +11,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/craftainer-labs/lib-operator-go/pkg/apis/common"
+	"github.com/craftainer-labs/lib-operator-go/pkg/cloud"
 	"github.com/craftainer-labs/lib-operator-go/pkg/egress"
 	"github.com/craftainer-labs/lib-operator-go/pkg/server"
 
@@ -35,6 +37,12 @@ type Config struct {
 	OperatorNamespace string
 	// Egress decides which destinations a provider connection may reach.
 	Egress egress.Policy
+	// EgressMode is the mode Egress was built from; the cloud clients use it
+	// to decide whether endpointOverride is honoured.
+	EgressMode egress.Mode
+	// Cognito builds the Cognito client of a Cognito provider (NewCognito
+	// when nil). Tests replace it.
+	Cognito func(aws.Config) CognitoAPI
 	// HostDialer builds the dialer of a connection; nil means Egress.HostDialer.
 	// Tests replace it, since the policy refuses the loopback address their
 	// providers listen on.
@@ -93,16 +101,27 @@ func keycloakTarget(spec *oidcv1alpha1.ProviderConfig, conn server.Connection, t
 	}, nil
 }
 
-// providerOf returns the provider fields of a provider kind of this operator
-// and the status it writes its discovery to.
-func providerOf(srv server.Server) (*oidcv1alpha1.ProviderConfig, *oidcv1alpha1.IdentityProviderStatus, error) {
+// providerRef is the parts of a provider of this operator that the probe and
+// the claims use: its own fields, the status it writes its discovery to, and
+// how it reaches the cloud.
+type providerRef struct {
+	spec   *oidcv1alpha1.ProviderConfig
+	status *oidcv1alpha1.IdentityProviderStatus
+	// scope and creds are the arguments of cloud.Egress.AWS: a namespaced
+	// provider has no workload identity.
+	scope cloud.Scope
+	creds *cloud.Credentials
+}
+
+// providerOf returns the provider fields of a provider kind of this operator.
+func providerOf(srv server.CloudServer) (providerRef, error) {
 	switch s := srv.(type) {
 	case *oidcv1alpha1.ClusterIdentityProvider:
-		return &s.Spec.ProviderConfig, &s.Status, nil
+		return providerRef{spec: &s.Spec.ProviderConfig, status: &s.Status, scope: cloud.ScopeCluster, creds: s.Spec.Credentials}, nil
 	case *oidcv1alpha1.IdentityProvider:
-		return &s.Spec.ProviderConfig, &s.Status, nil
+		return providerRef{spec: &s.Spec.ProviderConfig, status: &s.Status, scope: cloud.ScopeNamespaced, creds: s.Spec.Credentials.AsCredentials()}, nil
 	}
-	return nil, nil, fmt.Errorf("%w: %T", server.ErrUnknownServerKind, srv)
+	return providerRef{}, fmt.Errorf("%w: %T", server.ErrUnknownServerKind, srv)
 }
 
 // Backend is a resolved provider: its settings and the clients to reach it. The
@@ -111,15 +130,21 @@ func providerOf(srv server.Server) (*oidcv1alpha1.ProviderConfig, *oidcv1alpha1.
 type Backend struct {
 	// Spec is the provider's own fields.
 	Spec oidcv1alpha1.ProviderConfig
-	// Conn is the connection settings server.Resolve built: the endpoint, the
-	// admin credentials, the CA bundle and the proxy.
+	// Conn is the connection settings server.ResolveCloud built: the endpoint,
+	// the admin credentials, the CA bundle and the proxy.
 	Conn server.Connection
+	// Issuer is the issuer of the provider's tokens: spec.issuer, or for
+	// Cognito the one derived from the user pool.
+	Issuer string
+	// UserPoolID is the user pool of a Cognito provider.
+	UserPoolID string
 	// Discovery is what the provider's last successful probe found; nil before
 	// one.
 	Discovery *oidcv1alpha1.Discovery
 
 	keycloak func() (Conn, func(), error)
 	dcr      func() (Conn, func(), error)
+	cognito  func() (Conn, func(), error)
 
 	mu     sync.Mutex
 	leases []func()
@@ -141,6 +166,17 @@ func (b *Backend) DCR() (*idpclient.DCR, error) {
 		return nil, err
 	}
 	return c.(*idpclient.DCR), nil
+}
+
+// Cognito returns the client of a provider of type Cognito. Unlike the other
+// providers' clients it is not cached: building it retrieves the cloud
+// credentials, which must not happen with the cache's lock held.
+func (b *Backend) Cognito() (CognitoAPI, error) {
+	c, err := b.lease(b.cognito)
+	if err != nil {
+		return nil, err
+	}
+	return c.(*cognitoClient), nil
 }
 
 func (b *Backend) lease(get func() (Conn, func(), error)) (Conn, error) {
@@ -175,6 +211,8 @@ type providerObject struct {
 	generation int64
 	spec       oidcv1alpha1.ProviderConfig
 	discovery  *oidcv1alpha1.Discovery
+	scope      cloud.Scope
+	creds      *cloud.Credentials
 }
 
 // fetchProvider reads the provider ref names, which server.Connection does not
@@ -183,11 +221,13 @@ func (c Config) fetchProvider(ctx context.Context, ns string, ref common.ServerR
 	if ref.Kind == kindClusterIdentityProvider {
 		var p oidcv1alpha1.ClusterIdentityProvider
 		err := c.Client.Get(ctx, client.ObjectKey{Name: ref.Name}, &p)
-		return providerObject{p.UID, p.Generation, p.Spec.ProviderConfig, p.Status.Discovery}, err
+		return providerObject{uid: p.UID, generation: p.Generation, spec: p.Spec.ProviderConfig, discovery: p.Status.Discovery,
+			scope: cloud.ScopeCluster, creds: p.Spec.Credentials}, err
 	}
 	var p oidcv1alpha1.IdentityProvider
 	err := c.Client.Get(ctx, client.ObjectKey{Namespace: ns, Name: ref.Name}, &p)
-	return providerObject{p.UID, p.Generation, p.Spec.ProviderConfig, p.Status.Discovery}, err
+	return providerObject{uid: p.UID, generation: p.Generation, spec: p.Spec.ProviderConfig, discovery: p.Status.Discovery,
+		scope: cloud.ScopeNamespaced, creds: p.Spec.Credentials.AsCredentials()}, err
 }
 
 // Backend resolves ref for a claim in ns: the connection settings through
@@ -196,13 +236,15 @@ func (c Config) fetchProvider(ctx context.Context, ns string, ref common.ServerR
 // errors are coarse: conditions show a fixed text, and the log holds the same.
 func (c Config) Backend(ctx context.Context, ns string, ref common.ServerRef) (*Backend, error) {
 	key := providerKey(ns, ref)
-	conn, err := server.Resolve(ctx, c.Client, ns, ref, server.WithOperatorNamespace(c.OperatorNamespace))
+	cc, err := server.ResolveCloud(ctx, c.Client, ns, ref, server.WithOperatorNamespace(c.OperatorNamespace))
+	conn := cc.Connection
 	if err != nil {
 		// A provider that is gone or no longer usable keeps no client. A
 		// namespace the provider does not serve says nothing about the provider
 		// (other namespaces share the entry), so it is not on this list.
 		if errors.Is(err, server.ErrServerNotFound) || errors.Is(err, server.ErrInvalidServer) ||
-			errors.Is(err, server.ErrAdminSecretNamespaceForbidden) {
+			errors.Is(err, server.ErrAdminSecretNamespaceForbidden) ||
+			errors.Is(err, server.ErrCredentialsSecretNamespaceForbidden) || errors.Is(err, server.ErrCredentialsUnavailable) {
 			c.Cache.Forget(key)
 		}
 		return nil, coarse(ctx, "resolve the provider", err)
@@ -215,7 +257,7 @@ func (c Config) Backend(ctx context.Context, ns string, ref common.ServerRef) (*
 	if err != nil {
 		return nil, coarse(ctx, "build the dialer", err)
 	}
-	b := &Backend{Spec: obj.spec, Conn: conn, Discovery: obj.discovery}
+	b := &Backend{Spec: obj.spec, Conn: conn, Discovery: obj.discovery, Issuer: string(obj.spec.Issuer)}
 	spec := &b.Spec
 	switch spec.Type {
 	case oidcv1alpha1.ProviderKeycloak:
@@ -242,6 +284,21 @@ func (c Config) Backend(ctx context.Context, ns string, ref common.ServerRef) (*
 		b.dcr = func() (Conn, func(), error) {
 			cc, release, err := c.Cache.Get(key, version, func() (Conn, error) { return idpclient.NewDCR(target) })
 			return cc, release, coarse(ctx, "build the DCR client", err)
+		}
+	case oidcv1alpha1.ProviderCognito:
+		cg := spec.Cognito
+		if cg == nil {
+			return nil, coarse(ctx, "read the provider", fmt.Errorf("%w: no cognito block", server.ErrInvalidServer))
+		}
+		// The endpoints and the issuer follow from the configuration, so a
+		// client does not wait for the first probe.
+		b.Issuer, b.UserPoolID, b.Discovery = cognitoIssuer(cg), cg.UserPoolID, cognitoDiscovery(cg)
+		b.cognito = func() (Conn, func(), error) {
+			cl, err := c.newCognito(ctx, cg, obj.scope, obj.creds, cc)
+			if err != nil {
+				return nil, nil, coarse(ctx, "build the Cognito client", err)
+			}
+			return cl, cl.CloseIdleConnections, nil
 		}
 	default:
 		return nil, coarse(ctx, "read the provider", fmt.Errorf("%w: type %q", server.ErrInvalidServer, spec.Type))

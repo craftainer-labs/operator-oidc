@@ -118,7 +118,7 @@ func TestBackendDynamicRegistration(t *testing.T) {
 	cluster := &oidcv1alpha1.ClusterIdentityProvider{}
 	cluster.Name, cluster.UID, cluster.Generation = "dcr", "uid-cdcr", 1
 	cluster.Spec.ProviderConfig = withToken(dcrProvider("", endpoint)).Spec.ProviderConfig
-	cluster.Spec.AdminCredentialsSecretRef = common.AdminSecretRef{Name: "admin", Namespace: opsNS}
+	cluster.Spec.AdminCredentialsSecretRef = &common.AdminSecretRef{Name: "admin", Namespace: opsNS}
 	cluster.Spec.AllowedNamespaces = common.AllowedNamespaces{From: common.NamespacesAll}
 	c := fakeClient(t, namespace("team"),
 		secret("team", "admin", nil), secret("team", "iat", map[string]string{"token": "tok"}),

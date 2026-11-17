@@ -642,6 +642,13 @@ func TestNames(t *testing.T) {
 	if KeycloakClientID("team-a", "db") == KeycloakClientID("team", "a-db") {
 		t.Error("two claims share a client_id")
 	}
+	// A Cognito app client name is at most 128 characters and carries the short hash.
+	for _, n := range []string{"orders", long} {
+		got := CognitoClientName("team-a", n)
+		if i := strings.LastIndex(got, "-"); len(got) > 128 || len(got)-i-1 != 10 {
+			t.Errorf("cognito %q", got)
+		}
+	}
 	if got := Marker("ns", "name", "uid"); got != "ns/name/uid" {
 		t.Errorf("%s", got)
 	}

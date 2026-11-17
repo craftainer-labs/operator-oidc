@@ -15,8 +15,15 @@ import (
 	"github.com/craftainer-labs/operator-oidc/internal/idpclient"
 )
 
-// foreignKind satisfies server.Server without being one of the operator's kinds.
+// foreignKind satisfies server.CloudServer without being one of the operator's kinds.
 type foreignKind struct{ *oidcv1alpha1.IdentityProvider }
+
+// Probe is ProbeCloud for a test with a plain connection and no cloud
+// credentials; it returns the version.
+func (p Prober) Probe(ctx context.Context, srv server.CloudServer, conn server.Connection) (string, error) {
+	r, err := p.ProbeCloud(ctx, srv, server.CloudConnection{Connection: conn})
+	return r.Version, err
+}
 
 func connFor(f *idp, admin map[string]string) server.Connection {
 	conn := server.Connection{Endpoint: f.srv.URL, CABundle: f.ca, Admin: map[string][]byte{}}
@@ -46,7 +53,7 @@ func TestProbeKeycloak(t *testing.T) {
 
 	ns := keycloakProvider("team", f)
 	cluster := clusterKeycloak(f)
-	for _, srv := range []server.Server{ns, cluster} {
+	for _, srv := range []server.CloudServer{ns, cluster} {
 		version, err := p.Probe(ctx, srv, conn)
 		if err != nil || version != "" {
 			t.Fatalf("%T: %q, %v", srv, version, err)
