@@ -394,7 +394,9 @@ func TestEntraPublicAndClientCredentialsClients(t *testing.T) {
 	if f.count("update") != 0 {
 		t.Error("a matching public client was updated")
 	}
-	o.edit(func(c *oidcv1alpha1.OidcClient) { c.Spec.RedirectURIs = []oidcv1alpha1.RedirectURI{"https://app.example/other"} })
+	o.edit(func(c *oidcv1alpha1.OidcClient) {
+		c.Spec.RedirectURIs = []oidcv1alpha1.RedirectURI{"https://app.example/other"}
+	})
 	o.ok()
 	if f.count("update") != 1 || !slices.Equal(f.apps[id].PublicRedirectURIs, []string{"https://app.example/other"}) {
 		t.Errorf("updates = %d, app = %+v", f.count("update"), f.apps[id])
