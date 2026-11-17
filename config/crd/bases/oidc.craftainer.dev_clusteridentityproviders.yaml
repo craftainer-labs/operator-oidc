@@ -462,7 +462,7 @@ spec:
             - message: adminCredentialsSecretRef.namespace is required on a cluster-scoped
                 server
               rule: '!has(self.adminCredentialsSecretRef) || (has(self.adminCredentialsSecretRef.namespace)
-                && self.adminCredentialsSecretRef.namespace != '''')'
+                && size(self.adminCredentialsSecretRef.namespace) > 0)'
           status:
             description: status defines the observed state of ClusterIdentityProvider
             properties:

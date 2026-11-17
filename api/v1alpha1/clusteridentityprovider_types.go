@@ -12,7 +12,7 @@ import (
 // +kubebuilder:validation:XValidation:rule="self.type == 'Cognito' ? !has(self.issuer) : has(self.issuer)",message="issuer is required for Keycloak and DynamicRegistration and forbidden for Cognito (it is derived from the user pool)"
 // +kubebuilder:validation:XValidation:rule="!has(self.credentials) || self.type == 'Cognito'",message="credentials is only for a cloud provider (type Cognito)"
 // +kubebuilder:validation:XValidation:rule="self.type == 'Cognito' ? !has(self.adminCredentialsSecretRef) : has(self.adminCredentialsSecretRef)",message="adminCredentialsSecretRef is required, except for type Cognito, where it is forbidden (the cloud credential is credentials)"
-// +kubebuilder:validation:XValidation:rule="!has(self.adminCredentialsSecretRef) || (has(self.adminCredentialsSecretRef.namespace) && self.adminCredentialsSecretRef.namespace != '')",message="adminCredentialsSecretRef.namespace is required on a cluster-scoped server"
+// +kubebuilder:validation:XValidation:rule="!has(self.adminCredentialsSecretRef) || (has(self.adminCredentialsSecretRef.namespace) && size(self.adminCredentialsSecretRef.namespace) > 0)",message="adminCredentialsSecretRef.namespace is required on a cluster-scoped server"
 
 // ClusterIdentityProviderSpec defines the desired state of ClusterIdentityProvider.
 type ClusterIdentityProviderSpec struct {

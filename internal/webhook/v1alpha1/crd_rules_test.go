@@ -302,6 +302,18 @@ var _ = Describe("The oidc.craftainer.dev CRDs", func() {
 			p.Spec.AdminCredentialsSecretRef = &common.AdminSecretRef{Name: "admin", Namespace: "craftainer-system"}
 			rejected(k8sClient.Update(ctx, p), "type is immutable")
 		})
+
+		It("keeps the cognito block: it can be neither removed nor added to another type", func() {
+			p := clusterCognito("block-removed")
+			Expect(create(p)).To(Succeed())
+			p.Spec.Cognito = nil
+			rejected(k8sClient.Update(ctx, p), "exactly the block matching type must be set")
+
+			k := clusterProvider("block-added")
+			Expect(create(k)).To(Succeed())
+			k.Spec.Cognito = cognito().Cognito
+			rejected(k8sClient.Update(ctx, k), "exactly the block matching type must be set")
+		})
 	})
 
 	Describe("A Cognito IdentityProvider", func() {
