@@ -340,7 +340,8 @@ func TestEntraRotationOverlapsAndFinishes(t *testing.T) {
 }
 
 // A rotation that crashed after issuing its secret and before the binding was
-// written leaves a secret of the same name: the retry removes it, so none leaks.
+// written leaves a secret of the same name: the retry keeps it (the binding may
+// hold it) and the finish removes it, so none leaks.
 func TestEntraRotationRetryDoesNotLeakASecret(t *testing.T) {
 	f := newFakeGraph()
 	o := newEntraOC(t, f, interceptor.Funcs{})
@@ -351,13 +352,10 @@ func TestEntraRotationRetryDoesNotLeakASecret(t *testing.T) {
 	})
 	o.rotate("1")
 	o.ok()
-	for _, k := range f.keys(id) {
-		if k == guidN("d", 1) {
-			t.Fatalf("the leftover secret was kept: %v", f.keys(id))
-		}
-	}
-	if len(f.keys(id)) != 2 {
-		t.Errorf("keys = %v", f.keys(id))
+	o.now = o.now.Add(2 * time.Hour)
+	o.ok()
+	if got := f.keys(id); len(got) != 1 || got[0] == guidN("d", 1) {
+		t.Errorf("keys after the finish = %v", got)
 	}
 }
 

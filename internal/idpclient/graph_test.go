@@ -213,7 +213,7 @@ func TestGraphInputsAndTokenFailures(t *testing.T) {
 	if err := fail.Probe(t.Context()); !errors.Is(err, ErrGraphToken) {
 		t.Errorf("err = %v", err)
 	}
-	for _, base := range []string{"", "ftp://x", "https://", "https://u:p@x"} {
+	for _, base := range []string{"", "ftp://x", "https://", "https://u:p@x", "http://x", "https://x?a=b", "https://x#f"} {
 		if _, err := NewGraph(http.DefaultClient, base, func(context.Context) (string, error) { return "", nil }); !errors.Is(err, ErrInvalidEndpoint) {
 			t.Errorf("NewGraph(%q) = %v", base, err)
 		}

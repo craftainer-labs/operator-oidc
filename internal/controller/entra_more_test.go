@@ -78,24 +78,11 @@ func TestEntraDriverRotationFailures(t *testing.T) {
 	f := newFakeGraph()
 	d, cur := entraDrv(t, f)
 
-	f.failOp["get"] = graphStatus(400)
-	if _, _, err := d.rotateBegin(ctx, entraW, cur, st); err == nil {
-		t.Error("a failed read rotated")
-	}
-	f.failOp["get"] = nil
 	f.failOp["add"] = graphStatus(400)
 	if _, _, err := d.rotateBegin(ctx, entraW, cur, st); err == nil {
 		t.Error("a refused secret rotated")
 	}
 	f.failOp["add"] = nil
-	f.with(func() {
-		f.apps[cur.ID].Passwords = append(f.apps[cur.ID].Passwords, idpclient.GraphPassword{KeyID: guidN("d", 1), DisplayName: passwordName(1)})
-	})
-	f.failOp["remove"] = graphStatus(400)
-	if _, _, err := d.rotateBegin(ctx, entraW, cur, st); err == nil {
-		t.Error("a leftover that could not be removed rotated")
-	}
-	f.failOp["remove"] = nil
 
 	// RotateFinish: a failed read, an active secret that is not there (nothing
 	// is removed), a failed removal and an application that is gone.

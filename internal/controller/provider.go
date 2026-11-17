@@ -47,8 +47,9 @@ type Config struct {
 	// Entra builds the Microsoft Graph client of an Entra provider (NewGraph
 	// when nil). Tests replace it.
 	Entra func(*cloud.AzureClient) (GraphAPI, error)
-	// RootCAs are the roots the cloud clients (AWS, Azure) trust; nil means the
-	// system roots. Tests whose fake cloud endpoint has its own certificate set it.
+	// RootCAs are the roots the Azure clients (Graph and the authority) trust;
+	// nil means the system roots. Only tests whose fake endpoint has its own
+	// certificate set it: no flag or environment variable reaches it.
 	RootCAs *x509.CertPool
 	// HostDialer builds the dialer of a connection; nil means Egress.HostDialer.
 	// Tests replace it, since the policy refuses the loopback address their

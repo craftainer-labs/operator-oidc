@@ -79,10 +79,10 @@ type Graph struct {
 }
 
 // NewGraph returns the client of the Graph at base (GraphBase, or an
-// endpointOverride); hc dials through the egress policy.
+// https endpointOverride with no query or fragment); hc dials through the egress policy.
 func NewGraph(hc *http.Client, base string, token GraphToken) (*Graph, error) {
 	u, err := url.Parse(base)
-	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.User != nil {
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
 		return nil, ErrInvalidEndpoint
 	}
 	if hc == nil || token == nil {
@@ -155,19 +155,12 @@ type graphCredential struct {
 	DisplayName string `json:"displayName"`
 }
 
-// strs is s, never nil: Graph clears a list it is given empty, and a null
-// list is not the same as an empty one.
-func strs(s []string) []string {
-	if s == nil {
-		return []string{}
-	}
-	return s
-}
-
+// wire is the request body of a. Lists are never nil (nonNil): Graph clears a
+// list it is given empty, and a null list is not the same as an empty one.
 func (a GraphApp) wire() graphApp {
 	w := graphApp{
 		DisplayName: a.DisplayName, SignInAudience: a.Audience, IsFallbackPublicClient: a.Public,
-		Web: graphWeb{RedirectURIs: strs(a.WebRedirectURIs)}, PublicClient: graphPlatform{RedirectURIs: strs(a.PublicRedirectURIs)},
+		Web: graphWeb{RedirectURIs: nonNil(a.WebRedirectURIs)}, PublicClient: graphPlatform{RedirectURIs: nonNil(a.PublicRedirectURIs)},
 	}
 	if a.LogoutURL != "" {
 		u := a.LogoutURL

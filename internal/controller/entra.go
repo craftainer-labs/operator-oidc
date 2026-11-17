@@ -335,24 +335,13 @@ func (d *entraDriver) deleteApp(ctx context.Context, id string) error {
 // A confidential application can hold several, so the old one stays valid
 // through the grace period. The new key ID is the generation. A secret of an
 // earlier attempt with the same name (the crash came before the binding was
-// written) is removed first, so a retry does not leak one.
+// written) is left alone: the binding may still hold it, and RotateFinish
+// removes every secret but the active one, so none leaks.
 func (d *entraDriver) rotateBegin(ctx context.Context, w clientSpec, cur entraState, st lifecycle.RotationState) (binding.Data, lifecycle.Generation, error) {
 	if w.public {
 		return d.data(cur.AppID, ""), lifecycle.Generation(fmt.Sprint(st.Sequence + 1)), nil
 	}
-	name := passwordName(st.Sequence + 1)
-	a, err := d.api.Get(ctx, cur.ID)
-	if err != nil {
-		return nil, "", entraErr(err)
-	}
-	for _, p := range a.Passwords {
-		if p.DisplayName == name {
-			if err := d.api.RemovePassword(ctx, cur.ID, p.KeyID); err != nil {
-				return nil, "", entraErr(err)
-			}
-		}
-	}
-	sec, err := d.api.AddPassword(ctx, cur.ID, name)
+	sec, err := d.api.AddPassword(ctx, cur.ID, passwordName(st.Sequence+1))
 	if err != nil {
 		return nil, "", entraErr(err)
 	}
