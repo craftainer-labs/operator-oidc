@@ -396,6 +396,8 @@ func TestEntraPublicAndClientCredentialsClients(t *testing.T) {
 	}
 	o.rotate("1")
 	o.ok()
+	o.now = o.now.Add(2 * time.Hour)
+	o.ok()
 	if f.count("add") != 0 || len(f.keys(id)) != 0 {
 		t.Error("a public client was given a secret")
 	}
@@ -537,8 +539,8 @@ func TestEntraDelete(t *testing.T) {
 	if _, err := o.reconcile(); err == nil || o.gone() {
 		t.Fatalf("a failed delete released the claim: %v", err)
 	}
-	f.failOp["delete"] = nil
-	f.with(func() { clear(f.apps) })
+	// The tenant answers 404 for an application that went meanwhile.
+	f.failOp["delete"] = graphStatus(404)
 	o.ok()
 	if !o.gone() {
 		t.Error("an application that is already gone held the claim")

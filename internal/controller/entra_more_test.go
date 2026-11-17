@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/craftainer-labs/lib-operator-go/pkg/cloud"
@@ -50,6 +51,15 @@ func TestEntraDriverUpdateFailures(t *testing.T) {
 	if _, err := d.update(ctx, w, cur); !errors.Is(err, ErrEntraLogout) {
 		t.Errorf("err = %v", err)
 	}
+	// A binding Secret that cannot be read is reported.
+	good := d.cfg.Client
+	d.cfg.Client = fakeClientWith(t, interceptor.Funcs{Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+		return errors.New("the API server is down")
+	}})
+	if _, err := d.update(ctx, entraW, cur); err == nil || errors.Is(err, ErrBindingNotUsable) {
+		t.Errorf("err = %v", err)
+	}
+	d.cfg.Client = good
 	f.failOp["update"] = graphStatus(400)
 	if _, err := d.update(ctx, entraW, cur); err == nil {
 		t.Error("a refused update succeeded")
