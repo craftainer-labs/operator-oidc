@@ -28,6 +28,8 @@ type graphFake struct {
 	// answer maps "METHOD /path" to a status and a body.
 	answer map[string]graphAnswer
 	auth   string
+	// prefer is the Prefer header of the last request that had one.
+	prefer string
 }
 
 type graphAnswer struct {
@@ -50,6 +52,9 @@ func startGraph(t *testing.T, answer map[string]graphAnswer) (*Graph, *graphFake
 		call := r.Method + " " + r.URL.Path
 		f.seen = append(f.seen, call)
 		f.auth = r.Header.Get("Authorization")
+		if v := r.Header.Get("Prefer"); v != "" {
+			f.prefer = v
+		}
 		if raw, _ := io.ReadAll(r.Body); len(raw) > 0 {
 			var m map[string]any
 			if err := json.Unmarshal(raw, &m); err == nil {
@@ -90,16 +95,21 @@ func TestGraphProbeAndBearer(t *testing.T) {
 	}
 }
 
+const upsertCall = "PATCH /v1.0/applications(uniqueName='app-1')"
+
 func TestGraphCreateSendsTheWholeApplication(t *testing.T) {
-	g, f := startGraph(t, map[string]graphAnswer{"POST /v1.0/applications": {201, appJSON("")}})
-	app, err := g.Create(t.Context(), GraphApp{DisplayName: "n", Audience: GraphAudience, WebRedirectURIs: []string{"https://a/cb"}})
+	g, f := startGraph(t, map[string]graphAnswer{upsertCall: {201, appJSON("")}})
+	app, err := g.Create(t.Context(), GraphApp{UniqueName: "app-1", DisplayName: "n", Audience: GraphAudience, WebRedirectURIs: []string{"https://a/cb"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if app.ID != appObj || app.AppID != appCli || !slices.Equal(app.WebRedirectURIs, []string{"https://a/cb"}) || app.LogoutURL != "" {
 		t.Errorf("app = %+v", app)
 	}
-	b := f.body["POST /v1.0/applications"]
+	if f.prefer != "create-if-missing" {
+		t.Errorf("Prefer = %q", f.prefer)
+	}
+	b := f.body[upsertCall]
 	web := b["web"].(map[string]any)
 	pub := b["publicClient"].(map[string]any)
 	if b["displayName"] != "n" || b["signInAudience"] != GraphAudience || b["isFallbackPublicClient"] != false ||
@@ -108,21 +118,53 @@ func TestGraphCreateSendsTheWholeApplication(t *testing.T) {
 	}
 
 	// An answer with a bad ID is refused.
-	g, _ = startGraph(t, map[string]graphAnswer{"POST /v1.0/applications": {201, `{"id":"../x","appId":"` + appCli + `"}`}})
-	if _, err := g.Create(t.Context(), GraphApp{}); !errors.Is(err, ErrBadResponse) {
+	g, _ = startGraph(t, map[string]graphAnswer{upsertCall: {201, `{"id":"../x","appId":"` + appCli + `"}`}})
+	if _, err := g.Create(t.Context(), GraphApp{UniqueName: "app-1"}); !errors.Is(err, ErrBadResponse) {
 		t.Errorf("err = %v", err)
+	}
+}
+
+// The upsert answers 204 for an application that exists: it is then read by its
+// uniqueName, so a retry after a lost answer finds the application it made. A
+// uniqueName that is no plain key never reaches a path.
+func TestGraphCreateFindsTheExistingApplication(t *testing.T) {
+	byName := "GET /v1.0/applications(uniqueName='app-1')"
+	g, f := startGraph(t, map[string]graphAnswer{upsertCall: {204, ""}, byName: {200, appJSON("")}})
+	app, err := g.Create(t.Context(), GraphApp{UniqueName: "app-1", DisplayName: "n"})
+	if err != nil || app.ID != appObj || app.AppID != appCli {
+		t.Fatalf("app = %+v, err = %v", app, err)
+	}
+	if !f.saw(upsertCall) || !f.saw(byName) {
+		t.Errorf("seen = %v", f.seen)
+	}
+	got, err := g.GetByUniqueName(t.Context(), "app-1")
+	if err != nil || got.ID != appObj {
+		t.Errorf("app = %+v, err = %v", got, err)
+	}
+
+	g, _ = startGraph(t, map[string]graphAnswer{byName: {404, ""}})
+	if _, err := g.GetByUniqueName(t.Context(), "app-1"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("err = %v", err)
+	}
+	for _, bad := range []string{"", "a'b", "a)/b", "a b", strings.Repeat("a", 121)} {
+		if _, err := g.GetByUniqueName(t.Context(), bad); !errors.Is(err, ErrInvalidID) {
+			t.Errorf("GetByUniqueName(%q) = %v", bad, err)
+		}
+		if _, err := g.Create(t.Context(), GraphApp{UniqueName: bad}); !errors.Is(err, ErrInvalidID) {
+			t.Errorf("Create(%q) = %v", bad, err)
+		}
 	}
 }
 
 func TestGraphGetUpdateDelete(t *testing.T) {
 	path := "/v1.0/applications/" + appObj
 	g, f := startGraph(t, map[string]graphAnswer{
-		"GET " + path:    {200, appJSON(`,"passwordCredentials":[{"keyId":"` + key1 + `","displayName":"craftainer-0"}]`)},
+		"GET " + path:    {200, appJSON(`,"passwordCredentials":[{"keyId":"` + key1 + `","displayName":"craftainer-0","hint":"abc"}]`)},
 		"PATCH " + path:  {204, ""},
 		"DELETE " + path: {204, ""},
 	})
 	app, err := g.Get(t.Context(), appObj)
-	if err != nil || len(app.Passwords) != 1 || app.Passwords[0].KeyID != key1 || app.Passwords[0].DisplayName != "craftainer-0" {
+	if err != nil || len(app.Passwords) != 1 || app.Passwords[0].KeyID != key1 || app.Passwords[0].DisplayName != "craftainer-0" || app.Passwords[0].Hint != "abc" {
 		t.Fatalf("app = %+v, err = %v", app, err)
 	}
 	if err := g.Update(t.Context(), appObj, GraphApp{DisplayName: "n", LogoutURL: "https://a/out"}); err != nil {
@@ -242,12 +284,12 @@ func TestEntraAppName(t *testing.T) {
 func TestGraphMoreFailures(t *testing.T) {
 	path := "/v1.0/applications/" + appObj
 	g, _ := startGraph(t, map[string]graphAnswer{
-		"POST /v1.0/applications":          {400, ""},
+		upsertCall:                         {400, ""},
 		"PATCH " + path:                    {400, ""},
 		"POST " + path + "/addPassword":    {400, ""},
 		"POST " + path + "/removePassword": {500, ""},
 	})
-	if _, err := g.Create(t.Context(), GraphApp{}); err == nil {
+	if _, err := g.Create(t.Context(), GraphApp{UniqueName: "app-1"}); err == nil {
 		t.Error("a refused create succeeded")
 	}
 	if err := g.Update(t.Context(), "nope", GraphApp{}); !errors.Is(err, ErrInvalidID) {
@@ -294,5 +336,12 @@ func TestGraphConnectionFailureIsACategory(t *testing.T) {
 	srv.Close()
 	if err := g.Probe(t.Context()); !errors.Is(err, ErrConnFailed) {
 		t.Errorf("err = %v", err)
+	}
+}
+
+func TestEntraUniqueName(t *testing.T) {
+	got := EntraUniqueName("team", "web.app")
+	if !uniqueNamePattern.MatchString(got) || got == EntraUniqueName("team", "web.app2") {
+		t.Errorf("uniqueName = %q", got)
 	}
 }

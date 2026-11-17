@@ -42,6 +42,9 @@ type GraphToken func(ctx context.Context) (string, error)
 type GraphPassword struct {
 	KeyID       string
 	DisplayName string
+	// Hint is the first three characters of the secret, which Graph keeps
+	// readable: the operator tells which secret a binding holds by it.
+	Hint string
 }
 
 // GraphApp is an application registration, as far as the operator manages it.
@@ -49,6 +52,9 @@ type GraphApp struct {
 	// ID is the object ID, AppID the application (client) ID.
 	ID    string
 	AppID string
+	// UniqueName is the application's alternate key (uniqueName): Create needs
+	// it, and what it makes is found by it again.
+	UniqueName string
 	// DisplayName is the name of the registration.
 	DisplayName string
 	// Audience is the signInAudience.
@@ -94,18 +100,28 @@ func NewGraph(hc *http.Client, base string, token GraphToken) (*Graph, error) {
 	return &Graph{conn: &conn{hc: hc}, base: &b, token: token}, nil
 }
 
-// do sends a request to the path below v1.0 and returns the answer when its
-// status is one of ok; any other status is an *Error.
-func (g *Graph) do(ctx context.Context, op, method string, query url.Values, body any, ok []int, segments ...string) (*response, error) {
-	tok, err := g.token(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrGraphToken, err)
-	}
+// url is the address of the path below v1.0.
+func (g *Graph) url(query url.Values, segments ...string) *url.URL {
 	u := g.base.JoinPath(segments...)
 	if query != nil {
 		u.RawQuery = query.Encode()
 	}
-	rq := request{method: method, url: u, bearer: tok}
+	return u
+}
+
+// do sends a request to the path below v1.0 and returns the answer when its
+// status is one of ok; any other status is an *Error.
+func (g *Graph) do(ctx context.Context, op, method string, query url.Values, body any, ok []int, segments ...string) (*response, error) {
+	return g.call(ctx, op, method, g.url(query, segments...), "", body, ok)
+}
+
+// call sends a request to u, with the Prefer header prefer when it is not "".
+func (g *Graph) call(ctx context.Context, op, method string, u *url.URL, prefer string, body any, ok []int) (*response, error) {
+	tok, err := g.token(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrGraphToken, err)
+	}
+	rq := request{method: method, url: u, bearer: tok, prefer: prefer}
 	if body != nil {
 		rq.body = mustJSON(body)
 		rq.contentType = jsonType
@@ -118,6 +134,23 @@ func (g *Graph) do(ctx context.Context, op, method string, query url.Values, bod
 		return nil, r.failed(ctx, op)
 	}
 	return r, nil
+}
+
+// uniqueNamePattern is what a uniqueName may hold. It is a key in a URL path,
+// so nothing that would need escaping is let through.
+var uniqueNamePattern = regexp.MustCompile(`^[0-9A-Za-z._-]{1,120}$`)
+
+// byUniqueName is the address of the application with the alternate key name
+// (OData: applications(uniqueName='name')).
+func (g *Graph) byUniqueName(name string) (*url.URL, error) {
+	if !uniqueNamePattern.MatchString(name) {
+		return nil, ErrInvalidID
+	}
+	u := g.url(nil, "applications")
+	u.Path += "(uniqueName='" + name + "')"
+	// The parentheses and quotes are legal in a path: send them as they are.
+	u.RawPath = u.Path
+	return u, nil
 }
 
 // Probe makes one cheap authenticated request that needs only the permission
@@ -141,6 +174,7 @@ type graphWeb struct {
 
 type graphApp struct {
 	ID                     string            `json:"id,omitempty"`
+	UniqueName             string            `json:"uniqueName,omitempty"`
 	AppID                  string            `json:"appId,omitempty"`
 	DisplayName            string            `json:"displayName,omitempty"`
 	SignInAudience         string            `json:"signInAudience,omitempty"`
@@ -153,6 +187,7 @@ type graphApp struct {
 type graphCredential struct {
 	KeyID       string `json:"keyId"`
 	DisplayName string `json:"displayName"`
+	Hint        string `json:"hint"`
 }
 
 // wire is the request body of a. Lists are never nil (nonNil): Graph clears a
@@ -174,7 +209,7 @@ func (w graphApp) app() (GraphApp, error) {
 		return GraphApp{}, ErrBadResponse
 	}
 	a := GraphApp{
-		ID: w.ID, AppID: w.AppID, DisplayName: w.DisplayName, Audience: w.SignInAudience, Public: w.IsFallbackPublicClient,
+		ID: w.ID, AppID: w.AppID, UniqueName: w.UniqueName, DisplayName: w.DisplayName, Audience: w.SignInAudience, Public: w.IsFallbackPublicClient,
 		WebRedirectURIs: w.Web.RedirectURIs, PublicRedirectURIs: w.PublicClient.RedirectURIs,
 	}
 	if w.Web.LogoutURL != nil {
@@ -197,9 +232,36 @@ func (g *Graph) decodeApp(r *response) (GraphApp, error) {
 	return w.app()
 }
 
-// Create makes the application. ID and Passwords of a are ignored.
+// Create makes the application a, or finds the one an earlier call made: an
+// upsert on the alternate key a.UniqueName (PATCH with Prefer:
+// create-if-missing; Graph answers 201 for a new application and 204 for an
+// existing one, which is then read). A retry after a lost answer therefore
+// never makes a second application. ID and Passwords of a are ignored. On an
+// existing application the settings are set to a, as Update does.
 func (g *Graph) Create(ctx context.Context, a GraphApp) (GraphApp, error) {
-	r, err := g.do(ctx, "create the application", http.MethodPost, nil, a.wire(), []int{http.StatusCreated}, "applications")
+	u, err := g.byUniqueName(a.UniqueName)
+	if err != nil {
+		return GraphApp{}, err
+	}
+	r, err := g.call(ctx, "create the application", http.MethodPatch, u, "create-if-missing", a.wire(),
+		[]int{http.StatusCreated, http.StatusNoContent})
+	if err != nil {
+		return GraphApp{}, err
+	}
+	if r.status == http.StatusNoContent {
+		return g.GetByUniqueName(ctx, a.UniqueName)
+	}
+	return g.decodeApp(r)
+}
+
+// GetByUniqueName reads the application by its alternate key; a missing one is
+// ErrNotFound.
+func (g *Graph) GetByUniqueName(ctx context.Context, name string) (GraphApp, error) {
+	u, err := g.byUniqueName(name)
+	if err != nil {
+		return GraphApp{}, err
+	}
+	r, err := g.call(ctx, "read the application", http.MethodGet, u, "", nil, []int{http.StatusOK})
 	if err != nil {
 		return GraphApp{}, err
 	}

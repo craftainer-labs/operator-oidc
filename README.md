@@ -270,7 +270,9 @@ each application it creates), and nothing wider.
   keeps the old one valid for the grace period; then every secret but the new
   one is removed (`removePassword`). The generation in `status.rotation` is the
   new secret's key ID. A secret is not readable again, so a binding Secret that
-  was deleted is written again through a rotation, with a new secret. A client
+  was deleted is written again with a new secret (a retry after a failed binding
+  write removes the secret of the failed attempt, except the one the binding
+  holds, found by Graph's three-character hint). A client
   secret Entra issues expires after two years by default: set a `rotationPolicy`
   that renews it sooner.
 - **No webOrigins.** An application has no such setting: the origins are dropped
@@ -366,11 +368,15 @@ NFR-0006 says what that cannot check.
   again (the client ID changes).
 - **An Entra application the status never recorded is not adopted.** An
   application has no tag or marker the operator relies on, so it is found by the
-  object ID in `status.externalId` alone. If the status cannot be written after
-  the application was created, the operator deletes it again; if that fails too,
-  or the operator stops between the two calls, the application stays in the
-  tenant under the claim's display name, and an administrator deletes it. A
-  deleted application stays in the tenant's recycle bin for 30 days.
+  object ID in `status.externalId`. Creating is an upsert on the claim's
+  `uniqueName` (`PATCH /applications(uniqueName='...')` with `Prefer:
+  create-if-missing`), so if the status cannot be written after the application
+  was created, or the answer is lost, the next attempt finds the same
+  application instead of making a second one. A read by that `uniqueName` also
+  stands in for a 404 by object ID, since Graph is eventually consistent. The
+  operator holds only `Application.ReadWrite.OwnedBy` and cannot see or change an
+  application it does not own. A deleted application stays in the tenant's
+  recycle bin for 30 days.
 - **An Entra application has one logout URL.** `postLogoutRedirectUris` may list
   at most one entry; a longer list is refused with a fixed text. Entra checks a
   post-logout redirect against the registered redirect URIs, so list that URI in

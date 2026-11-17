@@ -8,8 +8,12 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
+	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
+
 	"github.com/craftainer-labs/lib-operator-go/pkg/binding"
 	"github.com/craftainer-labs/lib-operator-go/pkg/cloud"
+	"github.com/craftainer-labs/lib-operator-go/pkg/egress"
 	"github.com/craftainer-labs/lib-operator-go/pkg/lifecycle"
 	"github.com/craftainer-labs/lib-operator-go/pkg/server"
 
@@ -31,6 +35,10 @@ var (
 	ErrEntraScope = errors.New("an Entra application supports only the OIDC scopes openid, profile, email and offline_access")
 )
 
+// textEntraEndpoint is the text of a Graph base that is no https URL, or has a
+// query or a fragment (the egress policy's own refusals say "not allowed here").
+const textEntraEndpoint = "endpointOverride must be an https URL with no credentials, query or fragment"
+
 // entraScopes are the scopes an Entra application grants without an API
 // permission: the OIDC scopes of the Microsoft identity platform.
 var entraScopes = []string{"openid", "profile", "email", "offline_access"}
@@ -40,6 +48,9 @@ var entraScopes = []string{"openid", "profile", "email", "offline_access"}
 type GraphAPI interface {
 	Probe(ctx context.Context) error
 	Get(ctx context.Context, id string) (idpclient.GraphApp, error)
+	GetByUniqueName(ctx context.Context, name string) (idpclient.GraphApp, error)
+	// Create is idempotent on a.UniqueName: it returns the application an
+	// earlier call made.
 	Create(ctx context.Context, a idpclient.GraphApp) (idpclient.GraphApp, error)
 	Update(ctx context.Context, id string, a idpclient.GraphApp) error
 	Delete(ctx context.Context, id string) error
@@ -61,13 +72,19 @@ func NewGraph(az *cloud.AzureClient) (GraphAPI, error) {
 	if az.Endpoint != "" {
 		base = strings.TrimRight(az.Endpoint, "/")
 	}
-	src := cloud.AzureTokenSource(az.Credential, idpclient.GraphScope)
+	cred := az.Credential
+	if cred == nil {
+		return nil, cloudErr("the cloud credentials are unavailable")
+	}
+	// The credential is asked directly, not through cloud.AzureTokenSource,
+	// which drops the cause: entraErr needs it to tell a refusal from a timeout.
+	// The credential caches tokens itself.
 	g, err := idpclient.NewGraph(hc, base, func(ctx context.Context) (string, error) {
-		tok, _, err := src.Token(ctx)
-		return tok, err
+		tok, err := cred.GetToken(ctx, policy.TokenRequestOptions{Scopes: []string{idpclient.GraphScope}})
+		return tok.Token, err
 	})
 	if err != nil {
-		return nil, cloudErr("endpointOverride is not allowed here")
+		return nil, cloudErr(textEntraEndpoint)
 	}
 	return g, nil
 }
@@ -146,13 +163,33 @@ func entraErr(err error) error {
 		return nil
 	}
 	if errors.Is(err, idpclient.ErrGraphToken) {
-		return cloudErr("the cloud credentials are unavailable")
+		return tokenErr(err)
 	}
 	var se *idpclient.Error
 	if errors.As(err, &se) && transientCause(nil, se.Status) {
 		return &CloudError{msg: "the Graph API call failed", transient: true}
 	}
 	return err
+}
+
+// tokenErr classifies a token fetch that failed. A connection the egress policy
+// refused stays a refusal; a deadline, a network error and a 408, 429 or 5xx
+// answer of the authority pass by themselves (the provider is unreachable for
+// now); a refusal of the credentials (a 4xx answer, a missing credential) does
+// not. It never carries the cause's text.
+func tokenErr(err error) error {
+	if errors.Is(err, egress.ErrBlocked) || errors.Is(err, egress.ErrProxy) || errors.Is(err, egress.ErrProxyUserinfo) {
+		return cloudErr("the connection to the Entra authority was refused by the egress policy")
+	}
+	status := 0
+	var af *azidentity.AuthenticationFailedError
+	if errors.As(err, &af) && af.RawResponse != nil {
+		status = af.RawResponse.StatusCode
+	}
+	if transientCause(err, status) {
+		return &CloudError{msg: "the Entra authority call failed", transient: true}
+	}
+	return cloudErr("the cloud credentials are unavailable")
 }
 
 // discoverEntra probes the tenant of an Entra provider: it gets a token and
@@ -188,9 +225,13 @@ type entraState struct {
 
 // entraDriver manages an application registration of a tenant.
 // status.externalName is the display name and status.externalId the object ID
-// Graph assigned: an application carries no ownership marker the operator may
-// rely on (ADR 0004), so it is found by the object ID only, and an application
-// the status never recorded is not adopted.
+// Graph assigned. An application carries no ownership marker the operator may
+// rely on (ADR 0004), so it is found by the object ID, and an application the
+// status never recorded is not adopted. The one exception is the claim's own
+// uniqueName: creating is an upsert on it, and a read by it stands in for a
+// 404 by object ID (Graph is eventually consistent), so a retry never makes a
+// second application. The operator can see and change only the applications its
+// identity owns (Application.ReadWrite.OwnedBy), so a name it finds is its own.
 type entraDriver struct {
 	base
 	api GraphAPI
@@ -199,7 +240,10 @@ type entraDriver struct {
 // app is the application as the claim wants it. The claim's one post-logout
 // redirect URI is the application's logout URL.
 func (d *entraDriver) app(w clientSpec) (idpclient.GraphApp, error) {
-	a := idpclient.GraphApp{DisplayName: d.claim.GetExternalName(), Audience: idpclient.GraphAudience, Public: w.public}
+	a := idpclient.GraphApp{
+		UniqueName:  idpclient.EntraUniqueName(d.claim.Namespace, d.claim.Name),
+		DisplayName: d.claim.GetExternalName(), Audience: idpclient.GraphAudience, Public: w.public,
+	}
 	if w.public {
 		a.PublicRedirectURIs = w.redirectURIs
 	} else {
@@ -234,7 +278,17 @@ func (d *entraDriver) observe(ctx context.Context, w clientSpec, wantErr error) 
 	}
 	a, err := d.api.Get(ctx, id)
 	if errors.Is(err, idpclient.ErrNotFound) {
-		return none, nil
+		// Graph is eventually consistent: an application made a moment ago may
+		// not be readable by its object ID yet. Its uniqueName says whether it
+		// is there, so a lagging read does not make a second one.
+		a, err = d.api.GetByUniqueName(ctx, idpclient.EntraUniqueName(d.claim.Namespace, d.claim.Name))
+		if errors.Is(err, idpclient.ErrNotFound) {
+			return none, nil
+		}
+		if err == nil && a.ID != id {
+			id = a.ID
+			d.claim.SetExternalID(id)
+		}
 	}
 	if err != nil {
 		return none, entraErr(err)
@@ -250,6 +304,10 @@ func (d *entraDriver) observe(ctx context.Context, w clientSpec, wantErr error) 
 // passwordName is the display name of the client secret a rotation issues.
 func passwordName(sequence int64) string { return fmt.Sprintf("craftainer-%d", sequence) }
 
+// create makes the application, or finds the one an earlier attempt made (the
+// create is an upsert on the claim's uniqueName), so a status that could not be
+// written, or an answer that was lost, leaves nothing behind: the next attempt
+// is the same application.
 func (d *entraDriver) create(ctx context.Context, w clientSpec) (binding.Data, error) {
 	a, err := d.app(w)
 	if err != nil {
@@ -257,33 +315,20 @@ func (d *entraDriver) create(ctx context.Context, w clientSpec) (binding.Data, e
 	}
 	made, err := d.api.Create(ctx, a)
 	if err != nil {
-		if errors.Is(err, idpclient.ErrBadResponse) {
-			// The tenant may have made an application the operator cannot name.
-			d.orphanRisk(reasonRegistrationUnconfirmed)
-		}
 		return nil, entraErr(err)
 	}
 	// Record the application before anything else can fail.
 	d.claim.SetExternalID(made.ID)
 	if err := d.persist(ctx); err != nil {
-		// An application the status does not name would be found by no one at
-		// deletion: take it back. One that cannot be is an orphan risk: the claim
-		// keeps its id, and the next reconcile manages the application.
-		if d.takeBack(ctx, func(c context.Context) error { return d.deleteApp(c, made.ID) }) {
-			d.claim.SetExternalID("")
-		}
 		return nil, err
 	}
 	if w.public {
 		return d.data(made.AppID, ""), nil
 	}
-	// A failure here leaves an application with no secret: the next reconcile
-	// finds it out of date and issues one (update).
-	sec, err := d.api.AddPassword(ctx, made.ID, passwordName(0))
-	if err != nil {
-		return nil, entraErr(err)
-	}
-	return d.data(made.AppID, sec.Value), nil
+	// A failure here leaves an application with no secret the binding holds: the
+	// next reconcile finds the application out of date and goes through the same
+	// path (update).
+	return d.secretData(ctx, made.ID, made.AppID, made.Passwords)
 }
 
 func (d *entraDriver) update(ctx context.Context, w clientSpec, cur entraState) (binding.Data, error) {
@@ -302,23 +347,64 @@ func (d *entraDriver) update(ctx context.Context, w clientSpec, cur entraState) 
 	if w.public {
 		return d.data(cur.AppID, ""), nil
 	}
-	if !cur.HasSecret {
-		// The application was made and its secret never was.
-		sec, err := d.api.AddPassword(ctx, cur.ID, passwordName(0))
-		if err != nil {
-			return nil, entraErr(err)
-		}
-		return d.data(cur.AppID, sec.Value), nil
+	have, err := d.api.Get(ctx, cur.ID)
+	if err != nil {
+		return nil, entraErr(err)
 	}
-	// The secret is not readable again: it is the one the binding Secret holds.
-	secret, err := d.currentSecret(ctx)
+	return d.secretData(ctx, cur.ID, cur.AppID, have.Passwords)
+}
+
+// heldBy says the secret is one of the application's: Graph keeps the first
+// three characters of a secret (its hint) readable, which is all the operator
+// can compare a secret it cannot read again with.
+func heldBy(have []idpclient.GraphPassword, secret string) bool {
+	return len(secret) >= 3 && slices.ContainsFunc(have, func(p idpclient.GraphPassword) bool { return p.Hint == secret[:3] })
+}
+
+// secretData is the binding data of a confidential application: the secret the
+// binding Secret holds when the application still has it, else a new one. A
+// secret is not readable again, so a binding that is missing, empty or names a
+// secret the application no longer has is not an error: it gets a new secret.
+func (d *entraDriver) secretData(ctx context.Context, id, appID string, have []idpclient.GraphPassword) (binding.Data, error) {
+	bound, err := d.currentSecret(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if secret == "" {
-		return nil, ErrBindingNotUsable
+	if heldBy(have, bound) {
+		return d.data(appID, bound), nil
 	}
-	return d.data(cur.AppID, secret), nil
+	sec, err := d.issue(ctx, id, passwordName(0), bound)
+	if err != nil {
+		return nil, err
+	}
+	return d.data(appID, sec.Value), nil
+}
+
+// issue adds a client secret named name. It then removes the secrets of the
+// same name an earlier attempt left (the add succeeded and the binding was never
+// written), so the count stays bounded, except the one the binding Secret still
+// holds (bound): the binding stays valid until it is written again, and
+// RotateFinish removes that one later. The new secret is written to Graph first
+// and nothing is removed before it. The clean-up is best effort: a failure
+// there loses nothing, the next attempt or RotateFinish does it.
+func (d *entraDriver) issue(ctx context.Context, id, name, bound string) (idpclient.GraphSecret, error) {
+	sec, err := d.api.AddPassword(ctx, id, name)
+	if err != nil {
+		return sec, entraErr(err)
+	}
+	app, err := d.api.Get(ctx, id)
+	if err != nil {
+		return sec, nil
+	}
+	for _, p := range app.Passwords {
+		if p.DisplayName != name || strings.EqualFold(p.KeyID, sec.KeyID) || heldBy([]idpclient.GraphPassword{p}, bound) {
+			continue
+		}
+		if err := d.api.RemovePassword(ctx, id, p.KeyID); err != nil {
+			break
+		}
+	}
+	return sec, nil
 }
 
 // deleteApp deletes the application; one that is already gone is deleted as far
@@ -333,24 +419,29 @@ func (d *entraDriver) deleteApp(ctx context.Context, id string) error {
 
 // rotateBegin issues a new client secret next to the ones the application has.
 // A confidential application can hold several, so the old one stays valid
-// through the grace period. The new key ID is the generation. A secret of an
-// earlier attempt with the same name (the crash came before the binding was
-// written) is left alone: the binding may still hold it, and RotateFinish
-// removes every secret but the active one, so none leaks.
+// through the grace period. The new key ID is the generation. The secret is
+// added first; a secret of an earlier attempt with the same name is removed
+// afterwards unless the binding Secret holds it (see issue), and RotateFinish
+// removes every secret but the active one.
 func (d *entraDriver) rotateBegin(ctx context.Context, w clientSpec, cur entraState, st lifecycle.RotationState) (binding.Data, lifecycle.Generation, error) {
 	if w.public {
 		return d.data(cur.AppID, ""), lifecycle.Generation(fmt.Sprint(st.Sequence + 1)), nil
 	}
-	sec, err := d.api.AddPassword(ctx, cur.ID, passwordName(st.Sequence+1))
+	bound, err := d.currentSecret(ctx)
 	if err != nil {
-		return nil, "", entraErr(err)
+		return nil, "", err
+	}
+	sec, err := d.issue(ctx, cur.ID, passwordName(st.Sequence+1), bound)
+	if err != nil {
+		return nil, "", err
 	}
 	return d.data(cur.AppID, sec.Value), lifecycle.Generation(sec.KeyID), nil
 }
 
-// rotateFinish removes every client secret but the active generation's: the
-// first rotation's previous generation (the secret Create issued) is unknown to
-// the status, and so is a secret left by a failed attempt.
+// rotateFinish removes every client secret but the active generation's and the
+// one the binding Secret holds: the first rotation's previous generation (the
+// secret Create issued) is unknown to the status, and so is a secret left by a
+// failed attempt.
 func (d *entraDriver) rotateFinish(ctx context.Context, w clientSpec, cur entraState, st lifecycle.RotationState) error {
 	if w.public || st.Active == "" {
 		return nil
@@ -362,12 +453,19 @@ func (d *entraDriver) rotateFinish(ctx context.Context, w clientSpec, cur entraS
 	if err != nil {
 		return entraErr(err)
 	}
+	// The binding Secret may hold a secret that is not the active generation (one
+	// issued for a binding that had none, while a rotation was open): it is
+	// kept, or the binding would name a secret that is gone.
+	bound, err := d.currentSecret(ctx)
+	if err != nil {
+		return err
+	}
 	// Never remove the active secret, whatever else is wrong.
 	if !slices.ContainsFunc(a.Passwords, func(p idpclient.GraphPassword) bool { return strings.EqualFold(p.KeyID, string(st.Active)) }) {
 		return ErrBindingNotUsable
 	}
 	for _, p := range a.Passwords {
-		if strings.EqualFold(p.KeyID, string(st.Active)) {
+		if strings.EqualFold(p.KeyID, string(st.Active)) || heldBy([]idpclient.GraphPassword{p}, bound) {
 			continue
 		}
 		if err := d.api.RemovePassword(ctx, cur.ID, p.KeyID); err != nil {

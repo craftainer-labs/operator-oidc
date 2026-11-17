@@ -147,10 +147,12 @@ func tlsFor(t *testing.T, ip net.IP) (tls.Certificate, *x509.CertPool) {
 // client credentials token endpoint) and the part of Microsoft Graph v1.0 the
 // operator uses (applications and their passwords), on one server.
 type fakeTenant struct {
-	srv    *httptest.Server
-	roots  *x509.CertPool
-	mu     sync.Mutex
-	apps   map[string]map[string]any
+	srv   *httptest.Server
+	roots *x509.CertPool
+	mu    sync.Mutex
+	apps  map[string]map[string]any
+	// unique maps a uniqueName to the object ID of the application made for it.
+	unique map[string]string
 	n      int
 	tokens int
 	// calls are "METHOD /path" of every Graph call.
@@ -163,7 +165,7 @@ func startTenant(t *testing.T) *fakeTenant {
 	t.Helper()
 	ip := privateIP(t)
 	pair, roots := tlsFor(t, ip)
-	f := &fakeTenant{apps: map[string]map[string]any{}, roots: roots}
+	f := &fakeTenant{apps: map[string]map[string]any{}, unique: map[string]string{}, roots: roots}
 	f.srv = httptest.NewUnstartedServer(http.HandlerFunc(f.serve))
 	l, err := net.Listen("tcp", net.JoinHostPort(ip.String(), "0"))
 	if err != nil {
@@ -215,6 +217,31 @@ func (f *fakeTenant) graph(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(v)
 	}
+	// The alternate key: applications(uniqueName='name'). A PATCH with Prefer:
+	// create-if-missing is an upsert (201 for a new application, 204 for an
+	// existing one); a GET reads it.
+	if rest := strings.TrimPrefix(r.URL.Path, "/v1.0/applications"); strings.HasPrefix(rest, "(uniqueName='") && strings.HasSuffix(rest, "')") {
+		name := strings.TrimSuffix(strings.TrimPrefix(rest, "(uniqueName='"), "')")
+		id := f.unique[name]
+		switch {
+		case r.Method == http.MethodGet && f.apps[id] != nil:
+			out(http.StatusOK, f.apps[id])
+		case r.Method == http.MethodPatch && f.apps[id] != nil:
+			for k, v := range in {
+				f.apps[id][k] = v
+			}
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodPatch && r.Header.Get("Prefer") == "create-if-missing":
+			f.n++
+			id = fmt.Sprintf("a0000000-0000-4000-8000-%012d", f.n)
+			in["id"], in["appId"], in["uniqueName"], in["passwordCredentials"] = id, fmt.Sprintf("b0000000-0000-4000-8000-%012d", f.n), name, []any{}
+			f.apps[id], f.unique[name] = in, id
+			out(http.StatusCreated, in)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+		return
+	}
 	switch {
 	case len(parts) == 0 && r.Method == http.MethodGet:
 		out(http.StatusOK, map[string]any{"value": []any{}})
@@ -240,9 +267,11 @@ func (f *fakeTenant) graph(w http.ResponseWriter, r *http.Request) {
 		f.n++
 		pc, _ := in["passwordCredential"].(map[string]any)
 		key := fmt.Sprintf("c0000000-0000-4000-8000-%012d", f.n)
+		// Graph keeps the first three characters of a secret readable (the hint).
+		text := fmt.Sprintf("s%d-secret", f.n)
 		list, _ := f.apps[parts[0]]["passwordCredentials"].([]any)
-		f.apps[parts[0]]["passwordCredentials"] = append(list, map[string]any{"keyId": key, "displayName": pc["displayName"]})
-		out(http.StatusOK, map[string]any{"keyId": key, "secretText": "secret-" + key[len(key)-4:], "displayName": pc["displayName"]})
+		f.apps[parts[0]]["passwordCredentials"] = append(list, map[string]any{"keyId": key, "displayName": pc["displayName"], "hint": text[:3]})
+		out(http.StatusOK, map[string]any{"keyId": key, "secretText": text, "displayName": pc["displayName"], "hint": text[:3]})
 	case len(parts) == 2 && parts[1] == "removePassword" && r.Method == http.MethodPost:
 		list, _ := f.apps[parts[0]]["passwordCredentials"].([]any)
 		kept := []any{}
@@ -430,7 +459,7 @@ func TestOidcClientControllerOnEntra(t *testing.T) {
 		t.Errorf("application = %v", app)
 	}
 	binding := bindingSecret(got)
-	if string(binding.Data["clientId"]) != app["appId"] || !strings.HasPrefix(string(binding.Data["clientSecret"]), "secret-") ||
+	if string(binding.Data["clientId"]) != app["appId"] || !strings.HasSuffix(string(binding.Data["clientSecret"]), "-secret") ||
 		string(binding.Data["issuer"]) != h.f.srv.URL+"/"+tenant+"/v2.0" ||
 		string(binding.Data["tokenEndpoint"]) != h.f.srv.URL+"/"+tenant+"/oauth2/v2.0/token" {
 		t.Errorf("binding keys = %v", binding.Data)

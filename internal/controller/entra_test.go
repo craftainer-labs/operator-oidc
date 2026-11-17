@@ -38,20 +38,25 @@ func graphStatus(status int) error { return &idpclient.Error{Status: status} }
 type fakeGraph struct {
 	mu   sync.Mutex
 	apps map[string]*idpclient.GraphApp
+	// uniq maps a uniqueName to the object ID of the application made for it.
+	uniq map[string]string
 	// secrets maps a key ID to the secret text it was issued with.
 	secrets map[string]string
 	n, k    int
 	calls   []string
 	created []idpclient.GraphApp
-	// failOp maps "probe", "create", "get", "update", "delete", "add" and
-	// "remove" to the error the fake answers.
+	// failOp maps "probe", "create", "get", "getUnique", "update", "delete",
+	// "add" and "remove" to the error the fake answers.
 	failOp map[string]error
+	// hideID is an object ID Get answers 404 for although the application
+	// exists (Graph's replicas lag after a create).
+	hideID string
 	// createEmpty makes a create answer without IDs (an unexpected document).
 	createEmpty bool
 }
 
 func newFakeGraph() *fakeGraph {
-	return &fakeGraph{apps: map[string]*idpclient.GraphApp{}, secrets: map[string]string{}, failOp: map[string]error{}}
+	return &fakeGraph{apps: map[string]*idpclient.GraphApp{}, secrets: map[string]string{}, uniq: map[string]string{}, failOp: map[string]error{}}
 }
 
 func (f *fakeGraph) enter(op string) error {
@@ -101,7 +106,7 @@ func (f *fakeGraph) Get(_ context.Context, id string) (idpclient.GraphApp, error
 		return idpclient.GraphApp{}, err
 	}
 	a, ok := f.apps[id]
-	if !ok {
+	if !ok || id == f.hideID {
 		return idpclient.GraphApp{}, graphStatus(404)
 	}
 	out := *a
@@ -119,11 +124,42 @@ func (f *fakeGraph) Create(_ context.Context, a idpclient.GraphApp) (idpclient.G
 	if f.createEmpty {
 		return idpclient.GraphApp{}, idpclient.ErrBadResponse
 	}
+	// An upsert: the application a retry made is found by its uniqueName (204),
+	// and its settings are set to a.
+	if cur, ok := f.apps[f.uniq[a.UniqueName]]; ok && a.UniqueName != "" {
+		a.ID, a.AppID, a.Passwords = cur.ID, cur.AppID, cur.Passwords
+		f.apps[a.ID] = &a
+		out := a
+		out.Passwords = slices.Clone(a.Passwords)
+		return out, nil
+	}
 	f.n++
 	a.ID, a.AppID, a.Passwords = guidN("a", f.n), guidN("b", f.n), nil
 	f.apps[a.ID] = &a
+	if a.UniqueName != "" {
+		f.uniq[a.UniqueName] = a.ID
+	}
 	return a, nil
 }
+
+func (f *fakeGraph) GetByUniqueName(_ context.Context, name string) (idpclient.GraphApp, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.enter("getUnique"); err != nil {
+		return idpclient.GraphApp{}, err
+	}
+	a, ok := f.apps[f.uniq[name]]
+	if !ok {
+		return idpclient.GraphApp{}, graphStatus(404)
+	}
+	out := *a
+	out.Passwords = slices.Clone(a.Passwords)
+	return out, nil
+}
+
+// fakeSecret is the text of the k-th secret the fake issues. Its first three
+// characters, the hint, differ from one secret to the next.
+func fakeSecret(k int) string { return fmt.Sprintf("s%d-secret", k) }
 
 func (f *fakeGraph) Update(_ context.Context, id string, a idpclient.GraphApp) error {
 	f.mu.Lock()
@@ -164,8 +200,8 @@ func (f *fakeGraph) AddPassword(_ context.Context, id, name string) (idpclient.G
 		return idpclient.GraphSecret{}, graphStatus(404)
 	}
 	f.k++
-	key, text := guidN("c", f.k), fmt.Sprintf("secret-%d", f.k)
-	a.Passwords = append(a.Passwords, idpclient.GraphPassword{KeyID: key, DisplayName: name})
+	key, text := guidN("c", f.k), fakeSecret(f.k)
+	a.Passwords = append(a.Passwords, idpclient.GraphPassword{KeyID: key, DisplayName: name, Hint: text[:3]})
 	f.secrets[key] = text
 	return idpclient.GraphSecret{KeyID: key, Value: text}, nil
 }
@@ -250,7 +286,7 @@ func TestEntraClientLifecycle(t *testing.T) {
 	s := o.secret("team", "web")
 	base := entraAuthority + "/" + testTenant
 	want := [][2]string{
-		{"clientId", appID}, {"clientSecret", "secret-1"}, {"issuer", base + "/v2.0"},
+		{"clientId", appID}, {"clientSecret", fakeSecret(1)}, {"issuer", base + "/v2.0"},
 		{"authorizationEndpoint", base + "/oauth2/v2.0/authorize"}, {"tokenEndpoint", base + "/oauth2/v2.0/token"},
 		{"jwksUri", base + "/discovery/v2.0/keys"}, {"userinfoEndpoint", "https://graph.microsoft.com/oidc/userinfo"},
 	}
@@ -287,7 +323,7 @@ func TestEntraClientLifecycle(t *testing.T) {
 	if n := f.count("update"); n != 3 {
 		t.Errorf("updates = %d", n)
 	}
-	if got := string(o.secret("team", "web").Data["clientSecret"]); got != "secret-1" {
+	if got := string(o.secret("team", "web").Data["clientSecret"]); got != fakeSecret(1) {
 		t.Errorf("secret after updates = %q", got)
 	}
 
@@ -315,7 +351,7 @@ func TestEntraRotationOverlapsAndFinishes(t *testing.T) {
 	if len(keys) != 2 || c.Status.Rotation == nil || c.Status.Rotation.Active != keys[1] || c.Status.Rotation.RetireAfter == nil {
 		t.Fatalf("keys = %v, rotation = %+v", keys, c.Status.Rotation)
 	}
-	if got := string(o.secret("team", "web").Data["clientSecret"]); got != "secret-2" {
+	if got := string(o.secret("team", "web").Data["clientSecret"]); got != fakeSecret(2) {
 		t.Errorf("rotated secret = %q", got)
 	}
 
@@ -369,7 +405,7 @@ func TestEntraLostBindingIsReissued(t *testing.T) {
 		t.Fatal(err)
 	}
 	o.ok()
-	if got := o.secret("team", "web"); got == nil || string(got.Data["clientSecret"]) != "secret-2" || f.n != 1 {
+	if got := o.secret("team", "web"); got == nil || string(got.Data["clientSecret"]) != fakeSecret(2) || f.n != 1 {
 		t.Errorf("rebuilt binding = %v after %d applications", got, f.n)
 	}
 }
@@ -491,7 +527,7 @@ func TestEntraMissingSecretIsIssued(t *testing.T) {
 	}
 	f.failOp["add"] = nil
 	o.ok()
-	if got := o.secret("team", "web"); got == nil || string(got.Data["clientSecret"]) != "secret-1" || f.n != 1 {
+	if got := o.secret("team", "web"); got == nil || string(got.Data["clientSecret"]) != fakeSecret(1) || f.n != 1 {
 		t.Errorf("binding = %v after %d applications", got, f.n)
 	}
 }
@@ -511,12 +547,18 @@ func TestEntraAPIFailuresAreCategories(t *testing.T) {
 	f.failOp["create"] = fmt.Errorf("%w: AADSTS70011 for client 0000", idpclient.ErrGraphToken)
 	o.failing("the cloud credentials are unavailable")
 
-	// A create answered with a document that has no IDs may have made an
-	// application the operator cannot name: say so.
+	// A create answered with a document that has no IDs is reported with a fixed
+	// text. Nothing is orphaned: the retry is an upsert on the claim's uniqueName.
 	f.failOp["create"] = nil
 	f.createEmpty = true
 	o.failing("the provider answered with an unexpected document")
-	wantCond(t, o.get(), conditionRegistrationUnconfirmed, metav1.ConditionTrue, reasonRegistrationUnconfirmed)
+
+	// A token that cannot be fetched because the authority timed out passes by
+	// itself; a refusal does not.
+	f.createEmpty = false
+	f.failOp["create"] = fmt.Errorf("%w: %w", idpclient.ErrGraphToken, context.DeadlineExceeded)
+	o.failing("the Entra authority call failed")
+	wantCond(t, o.get(), conditions.ServerReachable, metav1.ConditionFalse, conditions.ServerUnreachable)
 }
 
 // Observe tells an application someone deleted from one that cannot be read.
@@ -552,29 +594,41 @@ func TestEntraDelete(t *testing.T) {
 	}
 }
 
-// An application the status cannot record is taken back at once, and one that
-// cannot be taken back is reported.
-func TestEntraCreateTakesBackWhatItCannotRecord(t *testing.T) {
+// An application the status cannot record is not taken back: creating is an
+// upsert on the claim's uniqueName, so the next attempt finds it and never makes
+// a second one.
+func TestEntraCreateIsIdempotent(t *testing.T) {
 	failStatus := interceptor.Funcs{SubResourceUpdate: func(context.Context, client.Client, string, client.Object, ...client.SubResourceUpdateOption) error {
 		return errors.New("the API server is down")
 	}}
 	f := newFakeGraph()
 	o := newEntraOC(t, f, failStatus)
-	if _, err := o.reconcile(); err == nil {
-		t.Fatal("a status that could not be written was not reported")
+	for range 3 {
+		if _, err := o.reconcile(); err == nil {
+			t.Fatal("a status that could not be written was not reported")
+		}
 	}
-	if len(f.apps) != 0 || f.count("delete") != 1 {
-		t.Errorf("the application was not taken back: %d applications, %d deletes", len(f.apps), f.count("delete"))
+	if len(f.apps) != 1 || f.n != 1 || f.count("delete") != 0 || f.count("create") != 3 {
+		t.Errorf("%d applications (%d made), %d deletes, %d creates", len(f.apps), f.n, f.count("delete"), f.count("create"))
 	}
+	if got := f.created[0].UniqueName; got != idpclient.EntraUniqueName("team", "web") || got != f.created[2].UniqueName {
+		t.Errorf("uniqueName = %q", got)
+	}
+}
 
-	f = newFakeGraph()
-	f.failOp["delete"] = graphStatus(400)
-	o = newEntraOC(t, f, failStatus)
-	if _, err := o.reconcile(); err == nil {
-		t.Fatal("a status that could not be written was not reported")
+// A read by object ID that answers 404 for an application that exists (Graph's
+// replicas lag) does not make a second application: the uniqueName finds it.
+func TestEntraObserveFindsALaggingApplication(t *testing.T) {
+	f := newFakeGraph()
+	o := newEntraOC(t, f, interceptor.Funcs{})
+	o.ok()
+	f.with(func() { f.hideID = guidN("a", 1) })
+	o.ok()
+	if f.n != 1 || f.count("create") != 1 || f.count("update") != 0 || f.count("getUnique") != 1 {
+		t.Errorf("applications made = %d, creates = %d, updates = %d, reads by uniqueName = %d", f.n, f.count("create"), f.count("update"), f.count("getUnique"))
 	}
-	if len(f.apps) != 1 || !o.rec.has("Warning "+reasonCleanupFailed) {
-		t.Errorf("%d applications, events = %v", len(f.apps), o.rec.events)
+	if c := o.get(); c.Status.ExternalID != guidN("a", 1) {
+		t.Errorf("externalId = %q", c.Status.ExternalID)
 	}
 }
 

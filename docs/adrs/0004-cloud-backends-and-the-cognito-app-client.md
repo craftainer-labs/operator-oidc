@@ -101,7 +101,19 @@ Entra differs from Cognito in the points below:
   tenant ID) and `endpoint` (the authority host); there is no region, and no
   account ID.
 - **Found by object ID, never adopted** (as for Cognito): no tag or note is
-  written to the application. A create whose status write fails is deleted again.
+  written to the application, and an application the status never recorded is
+  not taken over. Creating is idempotent instead: it is an upsert,
+  `PATCH /v1.0/applications(uniqueName='<name>')` with `Prefer:
+  create-if-missing` (Graph answers 201 for a new application and 204 for an
+  existing one, which is then read), where the uniqueName is the claim's
+  long-hash name (`naming.Tenant`). A retry after a lost answer or a failed
+  status write therefore finds the application it made and never makes a
+  second one, so nothing is deleted again after a failed status write. Observe
+  keeps the read by object ID, and a 404 falls back to a read by uniqueName
+  before the application is reported gone, since Graph is eventually
+  consistent. This is not adoption: the operator holds only
+  `Application.ReadWrite.OwnedBy`, so it can neither see nor change an
+  application it does not own, and a uniqueName it finds is one of its own.
 - **The application is exactly its claim.** Display name, audience
   (`AzureADMyOrg`), the redirect URIs of both platforms, the logout URL and the
   public flag are sent whole and compared. A changed `public` is a refused
@@ -109,14 +121,21 @@ Entra differs from Cognito in the points below:
   permissions and consent are not managed), and at most one post-logout redirect
   URI is allowed (the logout URL).
 - **A real `Rotator`.** `RotateBegin` calls `addPassword` (named
-  `craftainer-<sequence>`) and returns the new key ID as the generation, after
-  removing a secret of the same name that a crashed attempt left; `RotateFinish`
-  calls `removePassword` for every secret but the active generation's, which also
-  retires the secret `Create` issued (the first rotation's previous generation,
-  which the status never names) and a leaked one. A binding Secret that is gone
-  is written again by the library through a rotation, since a secret is not
-  readable again. This is the existing claim semantics of a Keycloak client on a
-  new backend, not a new behaviour.
+  `craftainer-<sequence>`) first and returns the new key ID as the generation.
+  Only then does it remove the secrets of the same name that a failed attempt
+  left (the add succeeded and the binding was never written), except the one
+  whose Graph `hint` (the first three characters of the secret) equals the first
+  three characters of the secret the binding Secret holds: the binding stays
+  valid until it is written again, no secret is removed before the new one
+  exists, and the count stays bounded. `RotateFinish` calls `removePassword` for
+  every secret but the active generation's and the binding's, which also retires
+  the secret `Create` issued (the first rotation's previous generation, which
+  the status never names) and a leaked one. A confidential application whose
+  binding Secret is missing, empty or names a secret the application no longer
+  has gets a new secret through the same path. A token fetch that times out or
+  is answered with a 5xx is transient; a refusal of the credentials and a
+  connection the egress policy refused are not. This is the existing claim
+  semantics of a Keycloak client on a new backend, not a new behaviour.
 
 ## Consequences
 
