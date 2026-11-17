@@ -88,6 +88,7 @@ func (r *ClientReconciler) external(_ context.Context, be *Backend, c *oidcv1alp
 	x.want, x.wantErr = resolveSpec(c.Spec, be.Spec.AllowedScopes)
 	x.webOriginsDropped = be.Spec.Type != oidcv1alpha1.ProviderKeycloak && len(c.Spec.WebOrigins) > 0
 	var cog *cognitoDriver
+	var ent *entraDriver
 	switch be.Spec.Type {
 	case oidcv1alpha1.ProviderKeycloak:
 		k, err := be.Keycloak()
@@ -103,6 +104,13 @@ func (r *ClientReconciler) external(_ context.Context, be *Backend, c *oidcv1alp
 		}
 		cog = &cognitoDriver{base: b, api: api, pool: be.UserPoolID}
 		x.name = idpclient.CognitoClientName(c.Namespace, c.Name)
+	case oidcv1alpha1.ProviderEntra:
+		api, err := be.Entra()
+		if err != nil {
+			return nil, err
+		}
+		ent = &entraDriver{base: b, api: api}
+		x.name = idpclient.EntraAppName(c.Namespace, c.Name)
 	default:
 		d, err := be.DCR()
 		if err != nil {
@@ -120,6 +128,14 @@ func (r *ClientReconciler) external(_ context.Context, be *Backend, c *oidcv1alp
 	if cog != nil {
 		// A Cognito app client cannot rotate its secret: it is no Rotator.
 		return &cognitoExternal{claim: c, drv: cog, name: x.name, want: x.want, wantErr: x.wantErr, webOriginsDropped: x.webOriginsDropped}, nil
+	}
+	if ent != nil {
+		// An application can hold several secrets, so it rotates with an overlap.
+		wantErr := x.wantErr
+		if wantErr == nil {
+			wantErr = entraScopeProblem(x.want.scopes)
+		}
+		return &entraExternal{claim: c, drv: ent, name: x.name, want: x.want, wantErr: wantErr, webOriginsDropped: x.webOriginsDropped}, nil
 	}
 	return x, nil
 }
@@ -214,11 +230,12 @@ func (e *scopeNotAllowedError) Unwrap() error { return ErrScopeNotAllowed }
 
 // clientState is what Observe read of the client at the provider: Keycloak's
 // own representation, the stored registration of a dynamically registered
-// client, or the ID and secret of a Cognito app client.
+// client, the ID and secret of a Cognito app client, or an Entra application's IDs.
 type clientState struct {
 	kc  idpclient.Client
 	reg dcr.State
 	cog cognitoState
+	ent entraState
 }
 
 // driver is the provider-specific half of the External.
@@ -383,7 +400,7 @@ func (b *base) currentSecret(ctx context.Context) (string, error) {
 const (
 	conditionWebOriginsIgnored = "WebOriginsIgnored"
 	reasonWebOriginsIgnored    = "WebOriginsIgnored"
-	textWebOriginsIgnored      = "spec.webOrigins is ignored: the provider has no web origins field (dynamic registration and a Cognito app client have none)"
+	textWebOriginsIgnored      = "spec.webOrigins is ignored: the provider has no web origins field (dynamic registration, a Cognito app client and an Entra application have none)"
 )
 
 // noteWebOrigins sets the WebOriginsIgnored condition, or removes it when it no

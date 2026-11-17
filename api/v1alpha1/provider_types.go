@@ -7,7 +7,7 @@ import (
 
 // ProviderType is how the operator manages clients on the identity provider.
 //
-// +kubebuilder:validation:Enum=Keycloak;DynamicRegistration;Cognito
+// +kubebuilder:validation:Enum=Keycloak;DynamicRegistration;Cognito;Entra
 type ProviderType string
 
 // Values of ProviderType.
@@ -20,6 +20,9 @@ const (
 	// ProviderCognito manages clients as app clients of an existing Amazon
 	// Cognito user pool, through the Cognito user pools API.
 	ProviderCognito ProviderType = "Cognito"
+	// ProviderEntra manages clients as application registrations of an
+	// existing Microsoft Entra tenant, through Microsoft Graph.
+	ProviderEntra ProviderType = "Entra"
 )
 
 // Scope is one OAuth 2.0 scope token (RFC 6749, section 3.3): printable ASCII
@@ -120,6 +123,22 @@ type CognitoConfig struct {
 	Domain string `json:"domain"`
 }
 
+// EntraConfig is the block of a provider of type Entra: the existing Microsoft
+// Entra tenant whose application registrations the operator manages through
+// Microsoft Graph. The tenant and the Graph application permission of the
+// operator's identity (Application.ReadWrite.OwnedBy, with admin consent) are
+// the administrator's: the operator creates neither. tenantID is the common
+// provider.azure field of lib-operator-go (ADR 0002, section 16.1); the
+// subscription and resource group belong to the ARM-based operators and are
+// forbidden here. The endpoint override replaces the Entra authority host and
+// the Graph host, is for emulators and is only honoured when the operator runs
+// with EGRESS_MODE=allow-private.
+//
+// +kubebuilder:validation:XValidation:rule="!has(self.subscriptionID) && !has(self.resourceGroup)",message="subscriptionID and resourceGroup are not used by the oidc operator (Microsoft Graph targets the tenant)"
+type EntraConfig struct {
+	cloud.AzureClusterBlock `json:",inline"`
+}
+
 // ProviderConfig is what the two provider kinds share besides the server
 // blocks of lib-operator-go. It has no type-level rules: each kind's spec
 // carries the rules that differ between the cluster and the namespaced kind.
@@ -131,7 +150,8 @@ type ProviderConfig struct {
 
 	// issuer is the provider's https issuer URL (the "iss" of its tokens). It
 	// is required for Keycloak and DynamicRegistration and forbidden for
-	// Cognito, whose issuer the operator derives from the pool.
+	// Cognito and Entra, whose issuer the operator derives (from the pool, from
+	// the tenant).
 	//
 	// +optional
 	Issuer HTTPSURL `json:"issuer,omitempty"`
@@ -152,6 +172,12 @@ type ProviderConfig struct {
 	//
 	// +optional
 	Cognito *CognitoConfig `json:"cognito,omitempty"`
+
+	// entra is required when type is Entra and forbidden otherwise. The cloud
+	// credentials of the operator are the provider's credentials field.
+	//
+	// +optional
+	Entra *EntraConfig `json:"entra,omitempty"`
 
 	// allowedScopes limits the scopes a client may request.
 	//

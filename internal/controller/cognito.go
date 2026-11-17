@@ -110,8 +110,9 @@ func cognitoErr(err error) error {
 	return cloudErr("the Cognito API refused the request")
 }
 
-// awsErr is the category of a failure to build the AWS configuration.
-func awsErr(err error) error {
+// cloudConfigErr is the category of a failure to build a cloud configuration
+// (AWS or Azure).
+func cloudConfigErr(err error) error {
 	if errors.Is(err, cloud.ErrEndpointOverrideForbidden) || errors.Is(err, cloud.ErrInvalidEndpoint) {
 		return cloudErr("endpointOverride is not allowed here")
 	}
@@ -152,7 +153,7 @@ func (c Config) newCognito(ctx context.Context, cg *oidcv1alpha1.CognitoConfig, 
 	e := cloud.Egress{Mode: c.EgressMode, Policy: c.Egress, Proxy: conn.Proxy}
 	cfg, err := e.AWS(ctx, scope, cg.AWSClusterBlock, creds, conn.Credentials)
 	if err != nil {
-		return nil, awsErr(err)
+		return nil, cloudConfigErr(err)
 	}
 	factory := c.Cognito
 	if factory == nil {

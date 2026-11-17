@@ -7,7 +7,8 @@ A Kubernetes operator that registers OpenID Connect clients on
 [Keycloak](https://www.keycloak.org/) and on any identity provider that
 supports dynamic client registration ([RFC 7591](https://www.rfc-editor.org/rfc/rfc7591)
 and [RFC 7592](https://www.rfc-editor.org/rfc/rfc7592)), and as app clients of an
-existing [AWS Cognito](https://aws.amazon.com/cognito/) user pool. A team claims a client
+existing [AWS Cognito](https://aws.amazon.com/cognito/) user pool, or as application
+registrations of an existing [Microsoft Entra](https://learn.microsoft.com/entra/) tenant. A team claims a client
 with an `OidcClient`; the operator creates it on the provider and writes its
 client id and secret to a binding Secret. It is built on
 [`lib-operator-go`](https://github.com/craftainer-labs/lib-operator-go) and
@@ -40,6 +41,9 @@ Both provider kinds set a `type` (immutable) and the block that matches it:
 
 - `Cognito`: `cognito.region`, `cognito.userPoolID` and `cognito.domain`, and no
   `issuer` or admin Secret (see "Cognito clients" below).
+- `Entra`: `entra.tenantID` (and `entra.endpointOverride` on a cluster provider,
+  for tests), and no `issuer`, admin Secret, subscription or resource group (see
+  "Entra clients" below).
 
 They also set `issuer`, `allowedScopes`, and optionally `tls` (CA bundle, server
 name, minimum version), `proxyURL` and `healthCheckInterval`. Every URL must be
@@ -215,6 +219,69 @@ the pool.
 The `Cognito` backend is tested against the moto emulator (the `Integration`
 workflow's `cognito` job); NFR-0005 says what that cannot check.
 
+## Entra clients
+
+A provider of type `Entra` manages the application registrations of a Microsoft
+Entra tenant that already exists ([sample](config/samples/oidc_v1alpha1_clusteridentityprovider_entra.yaml)),
+through Microsoft Graph v1.0 (plain REST over the egress policy: five calls, no
+Graph SDK). The tenant and the Graph permission of the operator's identity are
+the administrator's: the operator creates neither. The identity needs the
+application permission `Application.ReadWrite.OwnedBy` (admin consent), which
+lets it create applications and manage the ones it owns (it becomes the owner of
+each application it creates), and nothing wider.
+
+- **Credentials.** `credentials` is the operator's cloud credential: its own
+  Azure Workload Identity (the default) or a Secret in the operator namespace
+  with `clientId` and `clientSecret` of an app registration. A namespaced
+  `IdentityProvider` of this type must use a Secret in its own namespace and has
+  no `endpointOverride`. `adminCredentialsSecretRef`, `issuer`, `subscriptionID`
+  and `resourceGroup` are forbidden.
+- **Derived values.** The issuer is
+  `https://login.microsoftonline.com/<tenantID>/v2.0`; the authorization and
+  token endpoints are `.../<tenantID>/oauth2/v2.0/{authorize,token}`, the keys
+  `.../<tenantID>/discovery/v2.0/keys` and the user info endpoint
+  `https://graph.microsoft.com/oidc/userinfo`. They are in `status.discovery` and
+  in the binding Secret. `endpointOverride` (cluster providers, only with
+  `EGRESS_MODE=allow-private`) replaces the authority host and the Graph host.
+- **Health.** The probe gets a Graph token and lists at most one application the
+  identity owns (`GET /v1.0/applications?$top=1&$select=id`, which needs no
+  permission beyond the one above). It records `status.discovered`
+  (`resourceId`, the tenant ID, and `endpoint`, the authority host). A failure
+  shows through the library's `Ready` and `ServerReachable` reasons with a coarse
+  message; never a tenant, an application or the service's own words.
+- **Applications.** `status.externalId` is the application's object ID and
+  `status.externalName` its display name; the binding's `clientId` is the
+  application (client) ID. A confidential claim gets a `web` application with
+  `redirectUris` and one client secret; a `public: true` claim a public client
+  (`isFallbackPublicClient`, redirect URIs on the public client platform) with no
+  secret. `signInAudience` is `AzureADMyOrg`. At most one `postLogoutRedirectUris`
+  entry is allowed: it is the application's logout URL. The application is
+  exactly its claim: a redirect URI or logout URL added at the tenant is drift
+  and put right. Settings the operator does not manage (API permissions, owners,
+  certificates, branding) are left alone.
+- **Scopes.** An application grants the OIDC scopes without registration; the
+  claim's scopes must be among `openid`, `profile`, `email` and `offline_access`
+  (and in the provider's `allowedScopes`). API permissions and consent are the
+  tenant administrator's.
+- **Rotation overlaps.** An application holds several client secrets, so the
+  claim is a `lifecycle.Rotator` like a Keycloak client: a rotation (the
+  `craftainer.dev/rotate` annotation or a `rotationPolicy`) adds a secret
+  (`addPassword`, named `craftainer-<n>`), writes it to the binding Secret and
+  keeps the old one valid for the grace period; then every secret but the new
+  one is removed (`removePassword`). The generation in `status.rotation` is the
+  new secret's key ID. A secret is not readable again, so a binding Secret that
+  was deleted is written again with a new secret (a retry after a failed binding
+  write removes the secret of the failed attempt, except the one the binding
+  holds, found by Graph's three-character hint). A client
+  secret Entra issues expires after two years by default: set a `rotationPolicy`
+  that renews it sooner.
+- **No webOrigins.** An application has no such setting: the origins are dropped
+  and the claim gets `WebOriginsIgnored`.
+
+The `Entra` backend is tested against a fake Graph and a fake Entra token
+endpoint (no Graph emulator exists), in the `Integration` workflow's `entra` job;
+NFR-0006 says what that cannot check.
+
 ## Known limits
 
 - **A lost DCR registration is never registered again.** When a
@@ -295,6 +362,29 @@ workflow's `cognito` job); NFR-0005 says what that cannot check.
 - **Cognito scopes are exact.** The client's allowed OAuth scopes are the
   claim's scopes. A custom scope must exist on a resource server of the pool, or
   Cognito refuses the request and the claim is `Synced=False`.
+
+- **An Entra application is not turned between public and confidential.** A claim
+  whose `public` is changed gets `Synced=False`: delete the claim and create it
+  again (the client ID changes).
+- **An Entra application the status never recorded is not adopted.** An
+  application has no tag or marker the operator relies on, so it is found by the
+  object ID in `status.externalId`. Creating is an upsert on the claim's
+  `uniqueName` (`PATCH /applications(uniqueName='...')` with `Prefer:
+  create-if-missing`), so if the status cannot be written after the application
+  was created, or the answer is lost, the next attempt finds the same
+  application instead of making a second one. A read by that `uniqueName` also
+  stands in for a 404 by object ID, since Graph is eventually consistent. The
+  operator holds only `Application.ReadWrite.OwnedBy` and cannot see or change an
+  application it does not own. A deleted application stays in the tenant's
+  recycle bin for 30 days.
+- **An Entra application has one logout URL.** `postLogoutRedirectUris` may list
+  at most one entry; a longer list is refused with a fixed text. Entra checks a
+  post-logout redirect against the registered redirect URIs, so list that URI in
+  `redirectUris` too. Grant types are not set per application: Entra applies the
+  flows its platform configuration allows.
+- **A Graph permission change takes time.** A tenant may take minutes to honour a
+  new application permission or consent, and a new application may not be
+  readable at once: the claim retries.
 
 ## Settings
 

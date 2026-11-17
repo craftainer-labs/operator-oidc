@@ -40,3 +40,25 @@ const maxCognitoClientNameLen = 128
 func CognitoClientName(ns, name string) string {
 	return naming.Tenant(ns, name, maxCognitoClientNameLen, "-", naming.HashShort)
 }
+
+// maxEntraAppNameLen is the cap of an application registration's display name.
+const maxEntraAppNameLen = 120
+
+// EntraAppName is the display name of the Entra application registration of an
+// OidcClient. An application has no tag the operator may rely on for ownership
+// (the drafts say none), and the object ID in status.externalId is what finds
+// it, so the name is only a label and carries the long hash, as ADR 0002
+// section 16.6 says.
+func EntraAppName(ns, name string) string {
+	return naming.Tenant(ns, name, maxEntraAppNameLen, "-", naming.HashLong)
+}
+
+// EntraUniqueName is the uniqueName (the alternate key) of the Entra
+// application of an OidcClient. Create is an upsert on it, so a retry after a
+// lost answer finds the application it made instead of making a second one. It
+// is the long-hash name of the claim; the operator can see and change only the
+// applications its identity owns (Application.ReadWrite.OwnedBy), so a name it
+// finds is one of its own, and adoption is still not a thing (ADR 0004).
+func EntraUniqueName(ns, name string) string {
+	return EntraAppName(ns, name)
+}

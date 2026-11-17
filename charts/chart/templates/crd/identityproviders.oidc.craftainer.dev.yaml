@@ -147,10 +147,11 @@ spec:
                 type: object
               credentials:
                 description: |-
-                  credentials are the cloud credentials of a provider of type Cognito:
+                  credentials are the cloud credentials of a provider of type Cognito or Entra:
                   always a Secret in the provider's own namespace (a tenant-created
                   provider cannot use the operator's workload identity), with the keys
-                  accessKeyId, secretAccessKey and optionally sessionToken.
+                  accessKeyId, secretAccessKey and optionally sessionToken (Cognito), or
+                  clientId and clientSecret (Entra).
                 properties:
                   secretRef:
                     description: SecretRef names the Secret in the server's own namespace.
@@ -235,6 +236,35 @@ spec:
                 required:
                 - registrationEndpoint
                 type: object
+              entra:
+                description: |-
+                  entra is required when type is Entra and forbidden otherwise. The cloud
+                  credentials of the operator are the provider's credentials field.
+                properties:
+                  endpointOverride:
+                    description: EndpointOverride is as on AWSClusterBlock.
+                    maxLength: 2048
+                    pattern: ^https?://[^\s]+$
+                    type: string
+                  resourceGroup:
+                    description: ResourceGroup is the resource group of the resources.
+                    pattern: ^[-\w._()]{1,90}$
+                    type: string
+                  subscriptionID:
+                    description: SubscriptionID is the subscription of the resources.
+                    pattern: ^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$
+                    type: string
+                  tenantID:
+                    description: TenantID is the Entra tenant.
+                    pattern: ^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$
+                    type: string
+                required:
+                - tenantID
+                type: object
+                x-kubernetes-validations:
+                - message: subscriptionID and resourceGroup are not used by the oidc
+                    operator (Microsoft Graph targets the tenant)
+                  rule: '!has(self.subscriptionID) && !has(self.resourceGroup)'
               healthCheckInterval:
                 description: |-
                   HealthCheckInterval is how often the server is probed (default 1m,
@@ -248,7 +278,8 @@ spec:
                 description: |-
                   issuer is the provider's https issuer URL (the "iss" of its tokens). It
                   is required for Keycloak and DynamicRegistration and forbidden for
-                  Cognito, whose issuer the operator derives from the pool.
+                  Cognito and Entra, whose issuer the operator derives (from the pool, from
+                  the tenant).
                 maxLength: 512
                 minLength: 1
                 type: string
@@ -368,6 +399,7 @@ spec:
                 - Keycloak
                 - DynamicRegistration
                 - Cognito
+                - Entra
                 type: string
                 x-kubernetes-validations:
                 - message: type is immutable
@@ -378,28 +410,34 @@ spec:
             x-kubernetes-validations:
             - message: 'exactly the block matching type must be set: keycloak for
                 Keycloak, dynamicRegistration for DynamicRegistration, cognito for
-                Cognito'
+                Cognito, entra for Entra'
               rule: 'self.type == ''Keycloak'' ? (has(self.keycloak) && !has(self.dynamicRegistration)
-                && !has(self.cognito)) : self.type == ''DynamicRegistration'' ? (has(self.dynamicRegistration)
-                && !has(self.keycloak) && !has(self.cognito)) : (has(self.cognito)
-                && !has(self.keycloak) && !has(self.dynamicRegistration))'
+                && !has(self.cognito) && !has(self.entra)) : self.type == ''DynamicRegistration''
+                ? (has(self.dynamicRegistration) && !has(self.keycloak) && !has(self.cognito)
+                && !has(self.entra)) : self.type == ''Cognito'' ? (has(self.cognito)
+                && !has(self.keycloak) && !has(self.dynamicRegistration) && !has(self.entra))
+                : (has(self.entra) && !has(self.keycloak) && !has(self.dynamicRegistration)
+                && !has(self.cognito))'
             - message: issuer is required for Keycloak and DynamicRegistration and
-                forbidden for Cognito (it is derived from the user pool)
-              rule: 'self.type == ''Cognito'' ? !has(self.issuer) : has(self.issuer)'
-            - message: credentials is only for a cloud provider (type Cognito)
-              rule: '!has(self.credentials) || self.type == ''Cognito'''
-            - message: 'a namespaced Cognito provider must set credentials with source
-                Secret: it cannot use the operator''s workload identity'
-              rule: self.type != 'Cognito' || has(self.credentials)
-            - message: adminCredentialsSecretRef is required, except for type Cognito,
-                where it is forbidden (the cloud credential is credentials)
-              rule: 'self.type == ''Cognito'' ? !has(self.adminCredentialsSecretRef)
+                forbidden for Cognito and Entra (it is derived from the user pool
+                or the tenant)
+              rule: 'self.type in [''Cognito'', ''Entra''] ? !has(self.issuer) : has(self.issuer)'
+            - message: credentials is only for a cloud provider (type Cognito or Entra)
+              rule: '!has(self.credentials) || self.type in [''Cognito'', ''Entra'']'
+            - message: 'a namespaced cloud provider (Cognito or Entra) must set credentials
+                with source Secret: it cannot use the operator''s workload identity'
+              rule: '!(self.type in [''Cognito'', ''Entra'']) || has(self.credentials)'
+            - message: adminCredentialsSecretRef is required, except for type Cognito
+                or Entra, where it is forbidden (the cloud credential is credentials)
+              rule: 'self.type in [''Cognito'', ''Entra''] ? !has(self.adminCredentialsSecretRef)
                 : has(self.adminCredentialsSecretRef)'
             - message: 'adminCredentialsSecretRef.namespace must not be set: the Secret
                 is in the IdentityProvider''s namespace'
               rule: '!has(self.adminCredentialsSecretRef) || !has(self.adminCredentialsSecretRef.namespace)'
             - message: cognito.endpointOverride is only for a cluster-scoped provider
               rule: '!has(self.cognito) || !has(self.cognito.endpointOverride)'
+            - message: entra.endpointOverride is only for a cluster-scoped provider
+              rule: '!has(self.entra) || !has(self.entra.endpointOverride)'
           status:
             description: status defines the observed state of IdentityProvider
             properties:

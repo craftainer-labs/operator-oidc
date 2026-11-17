@@ -1,0 +1,22 @@
+apiVersion: oidc.craftainer.dev/v1alpha1
+kind: ClusterIdentityProvider
+metadata:
+  labels:
+    app.kubernetes.io/name: operator-oidc
+    app.kubernetes.io/managed-by: kustomize
+  name: entra
+spec:
+  type: Entra
+  # The issuer is derived from the tenant: do not set it. Neither a
+  # subscriptionID nor a resourceGroup: Microsoft Graph targets the tenant.
+  entra:
+    tenantID: 11111111-2222-3333-4444-555555555555
+  # No credentials: the operator's Azure Workload Identity is used. The identity
+  # needs the Graph application permission Application.ReadWrite.OwnedBy (admin
+  # consent). A Secret in the operator namespace is the alternative:
+  # credentials: {source: Secret, secretRef: {name: azure-operator, namespace: craftainer-system}}
+  # holding the keys clientId and clientSecret.
+  allowedNamespaces:
+    from: Selector
+    selector:
+      matchLabels: {craftainer.dev/oidc: allowed}

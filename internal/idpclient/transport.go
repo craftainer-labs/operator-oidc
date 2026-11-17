@@ -191,9 +191,9 @@ func (c *conn) CloseIdleConnections() { c.hc.CloseIdleConnections() }
 
 // request is one HTTP request.
 type request struct {
-	method, bearer, contentType string
-	url                         *url.URL
-	body                        []byte
+	method, bearer, contentType, prefer string
+	url                                 *url.URL
+	body                                []byte
 }
 
 // response is the answer to a request.
@@ -217,6 +217,9 @@ func (c *conn) send(ctx context.Context, op string, rq request) (*response, erro
 	if rq.bearer != "" {
 		h.Set("Authorization", "Bearer "+rq.bearer)
 	}
+	if rq.prefer != "" {
+		h.Set("Prefer", rq.prefer)
+	}
 	req := (&http.Request{
 		Method: rq.method, URL: rq.url, Host: rq.url.Host, Header: h, Body: body, ContentLength: int64(len(rq.body)),
 	}).WithContext(ctx)
@@ -230,7 +233,7 @@ func (c *conn) send(ctx context.Context, op string, rq request) (*response, erro
 }
 
 func (c *conn) exchange(req *http.Request) (*response, error) {
-	resp, err := c.hc.Do(req)
+	resp, err := c.hc.Do(req) //nolint:gosec // G704: the destination is dialled through the egress policy, which refuses what a tenant must not reach
 	if err != nil {
 		return nil, err
 	}

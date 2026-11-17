@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -43,6 +44,13 @@ type Config struct {
 	// Cognito builds the Cognito client of a Cognito provider (NewCognito
 	// when nil). Tests replace it.
 	Cognito func(aws.Config) CognitoAPI
+	// Entra builds the Microsoft Graph client of an Entra provider (NewGraph
+	// when nil). Tests replace it.
+	Entra func(*cloud.AzureClient) (GraphAPI, error)
+	// RootCAs are the roots the Azure clients (Graph and the authority) trust;
+	// nil means the system roots. Only tests whose fake endpoint has its own
+	// certificate set it: no flag or environment variable reaches it.
+	RootCAs *x509.CertPool
 	// HostDialer builds the dialer of a connection; nil means Egress.HostDialer.
 	// Tests replace it, since the policy refuses the loopback address their
 	// providers listen on.
@@ -145,6 +153,7 @@ type Backend struct {
 	keycloak func() (Conn, func(), error)
 	dcr      func() (Conn, func(), error)
 	cognito  func() (Conn, func(), error)
+	entra    func() (Conn, func(), error)
 
 	mu     sync.Mutex
 	leases []func()
@@ -177,6 +186,16 @@ func (b *Backend) Cognito() (CognitoAPI, error) {
 		return nil, err
 	}
 	return c.(*cognitoClient), nil
+}
+
+// Entra returns the Graph client of a provider of type Entra. It is not cached,
+// for the reason Cognito is not.
+func (b *Backend) Entra() (GraphAPI, error) {
+	c, err := b.lease(b.entra)
+	if err != nil {
+		return nil, err
+	}
+	return c.(*entraClient), nil
 }
 
 func (b *Backend) lease(get func() (Conn, func(), error)) (Conn, error) {
@@ -297,6 +316,21 @@ func (c Config) Backend(ctx context.Context, ns string, ref common.ServerRef) (*
 			cl, err := c.newCognito(ctx, cg, obj.scope, obj.creds, cc)
 			if err != nil {
 				return nil, nil, coarse(ctx, "build the Cognito client", err)
+			}
+			return cl, cl.CloseIdleConnections, nil
+		}
+	case oidcv1alpha1.ProviderEntra:
+		en := spec.Entra
+		if en == nil {
+			return nil, coarse(ctx, "read the provider", fmt.Errorf("%w: no entra block", server.ErrInvalidServer))
+		}
+		// The endpoints and the issuer follow from the tenant, so a client does
+		// not wait for the first probe.
+		b.Issuer, b.Discovery = entraIssuer(en), entraDiscovery(en)
+		b.entra = func() (Conn, func(), error) {
+			cl, err := c.newEntra(ctx, en, obj.scope, obj.creds, cc)
+			if err != nil {
+				return nil, nil, coarse(ctx, "build the Graph client", err)
 			}
 			return cl, cl.CloseIdleConnections, nil
 		}
