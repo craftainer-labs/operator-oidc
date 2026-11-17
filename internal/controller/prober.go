@@ -22,7 +22,8 @@ import (
 // A provider of type Cognito is healthy when its user pool can be described
 // with the operator's cloud credentials (the Cognito API, not the hosted UI:
 // the endpoints of status.discovery follow from the configuration). The probe
-// records the pool in status.discovered and the CloudResolved condition.
+// records the pool in status.discovered; a failure shows through the
+// library's own reasons.
 //
 // It builds its clients through the egress policy and the provider's own proxy
 // and TLS settings, with connections of their own: it never takes a client from
@@ -48,7 +49,6 @@ func (p Prober) ProbeCloud(ctx context.Context, srv server.CloudServer, conn ser
 	}
 	if ref.spec.Type == oidcv1alpha1.ProviderCognito {
 		disc, err := p.Config.discoverCognito(ctx, ref, conn)
-		recordCloud(ref.status, srv.GetGeneration(), err)
 		if err != nil {
 			return probe.CloudResult{}, categoryOnly(err)
 		}

@@ -65,7 +65,7 @@ func is(target error) func(error) bool {
 }
 
 // isCloudError reports a failure of the cloud API or of the cloud credentials,
-// whose text is already one of a few fixed categories (CloudError).
+// whose text is already one of a few fixed categories (*CloudError).
 func isCloudError(err error) bool {
 	var e *CloudError
 	return errors.As(err, &e)

@@ -569,7 +569,7 @@ func TestBackendCognito(t *testing.T) {
 			}
 			api, err := b.Cognito()
 			if mode == egress.ModeStrict {
-				if err == nil || !strings.Contains(err.Error(), ReasonEndpointOverrideForbidden) {
+				if err == nil || !strings.Contains(err.Error(), "endpointOverride is not allowed here") {
 					t.Errorf("an endpoint override in strict mode: %v", err)
 				}
 			} else if err != nil || api == nil {
@@ -608,7 +608,7 @@ func TestBackendCognito(t *testing.T) {
 }
 
 // The probe describes the user pool and records what it found: the pool, the
-// issuer, the endpoints and the CloudResolved condition.
+// endpoint, and shows a failure as a coarse CloudError.
 func TestProbeCognito(t *testing.T) {
 	ctx := context.Background()
 	f := newFakeCognito()
@@ -618,8 +618,7 @@ func TestProbeCognito(t *testing.T) {
 
 	res, err := p.ProbeCloud(ctx, srv, conn)
 	want := map[string]string{
-		"region": "eu-west-1", "resourceId": testPool, "accountId": "111122223333",
-		"issuer": "https://cognito-idp.eu-west-1.amazonaws.com/" + testPool, "endpoint": "team-auth.auth.eu-west-1.amazoncognito.com",
+		"region": "eu-west-1", "resourceId": testPool, "endpoint": "team-auth.auth.eu-west-1.amazoncognito.com",
 	}
 	if err != nil || res.Version != "" || len(res.Discovered) != len(want) {
 		t.Fatalf("probe: %+v, %v", res, err)
@@ -632,95 +631,51 @@ func TestProbeCognito(t *testing.T) {
 	if d := srv.Status.Discovery; d == nil || d.TokenEndpoint != "https://team-auth.auth.eu-west-1.amazoncognito.com/oauth2/token" {
 		t.Errorf("discovery = %+v", d)
 	}
-	wantServerCond := func(status metav1.ConditionStatus, reason string) {
-		t.Helper()
-		got := conditionOf(srv.Status.Conditions, ConditionCloudResolved)
-		if got == nil || got.Status != status || got.Reason != reason {
-			t.Errorf("CloudResolved = %+v, want %s %s", got, status, reason)
-		}
-	}
-	wantServerCond(metav1.ConditionTrue, ReasonResolved)
-
 	// A pool answered without an ID or ARN is described by the spec.
 	f.pool = &cogtypes.UserPoolType{}
 	res, err = p.ProbeCloud(ctx, srv, conn)
-	if err != nil || res.Discovered["resourceId"] != testPool || res.Discovered["accountId"] != "" {
+	if err != nil || res.Discovered["resourceId"] != testPool {
 		t.Errorf("bare pool: %+v, %v", res, err)
 	}
 
 	for name, tc := range map[string]struct {
-		edit   func(*fakeCognito, *oidcv1alpha1.ClusterIdentityProvider, *server.CloudConnection)
-		reason string
-		text   string
+		edit func(*fakeCognito, *oidcv1alpha1.ClusterIdentityProvider, *server.CloudConnection)
+		text string
 	}{
 		"no such pool": {func(_ *fakeCognito, s *oidcv1alpha1.ClusterIdentityProvider, _ *server.CloudConnection) {
 			s.Spec.Cognito.UserPoolID = "eu-west-1_Other"
-		}, ReasonTargetNotFound, "the user pool does not exist"},
+		}, "the user pool does not exist"},
 		"a refused call": {func(f *fakeCognito, _ *oidcv1alpha1.ClusterIdentityProvider, _ *server.CloudConnection) {
 			f.failOp["pool"] = errRefused
-		}, ReasonCloudError, "the Cognito API refused the request"},
+		}, "the Cognito API refused the request"},
 		"a throttled call": {func(f *fakeCognito, _ *oidcv1alpha1.ClusterIdentityProvider, _ *server.CloudConnection) {
 			f.failOp["pool"] = errThrottled
-		}, ReasonCloudError, "the Cognito API call failed"},
+		}, "the Cognito API call failed"},
 		"an answer without a pool": {func(f *fakeCognito, _ *oidcv1alpha1.ClusterIdentityProvider, _ *server.CloudConnection) {
 			f.poolEmpty = true
-		}, ReasonCloudError, "the Cognito API answered with an unexpected document"},
+		}, "the Cognito API answered with an unexpected document"},
 		"no cognito block": {func(_ *fakeCognito, s *oidcv1alpha1.ClusterIdentityProvider, _ *server.CloudConnection) {
 			s.Spec.Cognito = nil
-		}, ReasonCloudError, "the provider has no cognito block"},
+		}, "the provider has no cognito block"},
 		"no credentials": {func(_ *fakeCognito, _ *oidcv1alpha1.ClusterIdentityProvider, c *server.CloudConnection) {
 			c.Credentials = nil
-		}, ReasonCredentialsUnavailable, "the cloud credentials are unavailable"},
+		}, "the cloud credentials are unavailable"},
 		"an override in strict mode": {func(_ *fakeCognito, s *oidcv1alpha1.ClusterIdentityProvider, _ *server.CloudConnection) {
 			s.Spec.Cognito.EndpointOverride = "http://10.0.0.5:5000"
-		}, ReasonEndpointOverrideForbidden, "endpointOverride is not allowed here"},
+		}, "endpointOverride is not allowed here"},
 	} {
 		f := newFakeCognito()
 		srv, conn := cognitoProvider(), conn
 		tc.edit(f, srv, &conn)
 		_, err := Prober{Config: Config{Cognito: fakeFactory(f)}}.ProbeCloud(ctx, srv, conn)
 		var ce *CloudError
-		if !errors.As(err, &ce) || ce.Reason != tc.reason || !strings.Contains(err.Error(), tc.text) {
+		if !errors.As(err, &ce) || !strings.Contains(err.Error(), tc.text) {
 			t.Errorf("%s: %v", name, err)
 			continue
-		}
-		if got := conditionOf(srv.Status.Conditions, ConditionCloudResolved); got == nil || got.Status != metav1.ConditionFalse || got.Reason != tc.reason {
-			t.Errorf("%s: CloudResolved = %+v", name, got)
 		}
 		if errors.Is(err, lifecycle.ErrUnreachable) != (name == "a throttled call") {
 			t.Errorf("%s: unreachable = %v", name, errors.Is(err, lifecycle.ErrUnreachable))
 		}
-	}
-}
-
-func conditionOf(conds []metav1.Condition, typ string) *metav1.Condition {
-	for i := range conds {
-		if conds[i].Type == typ {
-			return &conds[i]
-		}
-	}
-	return nil
-}
-
-// recordCloud clears lastProbeTime only when the condition changed, and shows a
-// failure that is not one of the categories as a generic one.
-func TestRecordCloud(t *testing.T) {
-	now := metav1.Now()
-	st := &oidcv1alpha1.IdentityProviderStatus{}
-	st.LastProbeTime = &now
-	recordCloud(st, 1, nil)
-	if st.LastProbeTime != nil {
-		t.Error("a new condition kept lastProbeTime")
-	}
-	st.LastProbeTime = &now
-	recordCloud(st, 1, nil)
-	if st.LastProbeTime == nil {
-		t.Error("an unchanged condition cleared lastProbeTime")
-	}
-	recordCloud(st, 1, errors.New("AKIASECRET"))
-	got := conditionOf(st.Conditions, ConditionCloudResolved)
-	if got.Status != metav1.ConditionFalse || got.Reason != ReasonCloudError || strings.Contains(got.Message, "AKIA") {
-		t.Errorf("condition = %+v", got)
 	}
 }
 

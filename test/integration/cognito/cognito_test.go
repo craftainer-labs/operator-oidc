@@ -16,6 +16,7 @@ import (
 	"encoding/hex"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -165,28 +166,22 @@ func TestCognitoProbeAgainstMoto(t *testing.T) {
 		t.Fatalf("probe: %v", err)
 	}
 	d := res.Discovered
-	if d["resourceId"] != h.poolID || d["region"] != motoRegion || d["accountId"] == "" ||
-		d["issuer"] != "https://cognito-idp."+motoRegion+".amazonaws.com/"+h.poolID {
+	if d["resourceId"] != h.poolID || d["region"] != motoRegion || d["endpoint"] == "" || len(d) != 3 {
 		t.Errorf("discovered = %v", d)
-	}
-	if c := meta.FindStatusCondition(h.provider.Status.Conditions, controller.ConditionCloudResolved); c == nil || c.Status != metav1.ConditionTrue {
-		t.Errorf("CloudResolved = %+v", c)
 	}
 
 	missing := h.provider.DeepCopy()
 	missing.Spec.Cognito.UserPoolID = motoRegion + "_doesnotexist"
-	_, err = p.ProbeCloud(ctx, missing, conn)
-	if c := meta.FindStatusCondition(missing.Status.Conditions, controller.ConditionCloudResolved); err == nil || c == nil || c.Reason != controller.ReasonTargetNotFound {
-		t.Errorf("a missing pool: %v, %+v", err, c)
+	if _, err = p.ProbeCloud(ctx, missing, conn); err == nil || !strings.Contains(err.Error(), "the user pool does not exist") {
+		t.Errorf("a missing pool: %v", err)
 	}
 
 	strict := controller.Prober{Config: h.config(controllerClient(t))}
 	strict.Config.EgressMode = egress.ModeStrict
 	strict.Config.Egress = egress.NewPolicy(egress.ModeStrict)
 	forbidden := h.provider.DeepCopy()
-	_, err = strict.ProbeCloud(ctx, forbidden, conn)
-	if c := meta.FindStatusCondition(forbidden.Status.Conditions, controller.ConditionCloudResolved); err == nil || c == nil || c.Reason != controller.ReasonEndpointOverrideForbidden {
-		t.Errorf("an override in strict mode: %v, %+v", err, c)
+	if _, err = strict.ProbeCloud(ctx, forbidden, conn); err == nil || !strings.Contains(err.Error(), "endpointOverride is not allowed here") {
+		t.Errorf("an override in strict mode: %v", err)
 	}
 }
 

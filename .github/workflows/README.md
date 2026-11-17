@@ -26,6 +26,12 @@
   `integration`) with verified connections, after linting that package with
   `golangci-lint --build-tags integration`. A step-started container, not a
   `services:` one, because the certificates come from the checkout.
+  Its `cognito` job (a separate job, the `Cognito` backend of the operator) starts
+  moto 5.2.5 (pinned by digest) on the default bridge network, reaches it at its
+  private address (never loopback, which `pkg/egress` blocks in both modes) with
+  `EGRESS_MODE=allow-private` set by the test itself, lints
+  `test/integration/cognito` with the tags `integration,cognito` and runs it. It
+  needs no Keycloak and no credentials; what moto cannot check is NFR-0005.
 - `release-extras.yml` — manually dispatched with a `tag` input, right after
   each `Release`: `gh workflow run release-extras.yml -f tag=vX.Y.Z`. Publishes
   the Helm chart (OCI), the OLM bundle image and the file-based catalog image

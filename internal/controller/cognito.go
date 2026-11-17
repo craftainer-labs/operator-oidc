@@ -12,8 +12,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	cip "github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider"
 	cogtypes "github.com/aws/aws-sdk-go-v2/service/cognitoidentityprovider/types"
-	"k8s.io/apimachinery/pkg/api/meta"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/craftainer-labs/lib-operator-go/pkg/binding"
 	"github.com/craftainer-labs/lib-operator-go/pkg/cloud"
@@ -24,34 +22,10 @@ import (
 	"github.com/craftainer-labs/operator-oidc/internal/idpclient"
 )
 
-// The operator's own condition and reasons for cloud providers (ADR 0002
-// section 16.1; the library has no constants for them, and the provider's
-// Ready and ServerReachable carry the probe's own generic reasons). Messages
-// stay coarse: a category, never SDK text, an ARN or a credential.
-const (
-	// ConditionCloudResolved is the provider condition that reports whether the
-	// user pool was found in the cloud.
-	ConditionCloudResolved = "CloudResolved"
-	// ReasonResolved is CloudResolved=True.
-	ReasonResolved = "Resolved"
-	// ReasonCredentialsUnavailable: no workload identity was injected, or the
-	// Secret is missing or malformed.
-	ReasonCredentialsUnavailable = "CredentialsUnavailable"
-	// ReasonTargetNotFound: the named user pool does not exist.
-	ReasonTargetNotFound = "TargetNotFound"
-	// ReasonEndpointOverrideForbidden: endpointOverride without
-	// EGRESS_MODE=allow-private, or on a namespaced provider.
-	ReasonEndpointOverrideForbidden = "EndpointOverrideForbidden"
-	// ReasonCloudError: the cloud API failed in another way.
-	ReasonCloudError = "CloudError"
-)
-
 // Keys of status.discovered of a Cognito provider.
 const (
 	discoveredRegion     = "region"
 	discoveredResourceID = "resourceId"
-	discoveredAccountID  = "accountId"
-	discoveredIssuer     = "issuer"
 	discoveredEndpoint   = "endpoint"
 )
 
@@ -64,24 +38,24 @@ const idpCognito = "COGNITO"
 // created.
 var ErrCognitoSecret = errors.New("a Cognito app client cannot gain or lose its secret: delete the claim and create it again")
 
-// CloudError is a failure to reach or use a cloud API. Reason is one of the
-// Reason constants; the message is a category.
+// CloudError is a failure to reach or use a cloud API. Its message is a coarse
+// category, never SDK text, an ARN or a credential. The probe shows it through
+// the library's own reasons (ServerReachable, Ready).
 type CloudError struct {
-	Reason string
-	msg    string
+	msg string
 	// transient says the failure may pass by itself (the API throttled or
 	// timed out).
 	transient bool
 }
 
 // Error implements error.
-func (e *CloudError) Error() string { return e.Reason + ": " + e.msg }
+func (e *CloudError) Error() string { return e.msg }
 
 // Is makes a transient failure lifecycle.ErrUnreachable, so a claim shows
 // ServerReachable=False instead of a generic failure.
 func (e *CloudError) Is(target error) bool { return e.transient && target == lifecycle.ErrUnreachable }
 
-func cloudErr(reason, msg string) error { return &CloudError{Reason: reason, msg: msg} }
+func cloudErr(msg string) error { return &CloudError{msg: msg} }
 
 // transientCause says whether err (an HTTP status of 0 means none) is a
 // failure that may pass by itself: a deadline, a cancelled context (the manager
@@ -125,17 +99,17 @@ func cognitoErr(err error) error {
 		}
 	}
 	if transient {
-		return &CloudError{Reason: ReasonCloudError, msg: "the Cognito API call failed", transient: true}
+		return &CloudError{msg: "the Cognito API call failed", transient: true}
 	}
-	return cloudErr(ReasonCloudError, "the Cognito API refused the request")
+	return cloudErr("the Cognito API refused the request")
 }
 
 // awsErr is the category of a failure to build the AWS configuration.
 func awsErr(err error) error {
 	if errors.Is(err, cloud.ErrEndpointOverrideForbidden) || errors.Is(err, cloud.ErrInvalidEndpoint) {
-		return cloudErr(ReasonEndpointOverrideForbidden, "endpointOverride is not allowed here")
+		return cloudErr("endpointOverride is not allowed here")
 	}
-	return cloudErr(ReasonCredentialsUnavailable, "the cloud credentials are unavailable")
+	return cloudErr("the cloud credentials are unavailable")
 }
 
 // CognitoAPI is the part of the Cognito user pools client the operator uses.
@@ -211,7 +185,7 @@ func cognitoDiscovery(cg *oidcv1alpha1.CognitoConfig) *oidcv1alpha1.Discovery {
 func (c Config) discoverCognito(ctx context.Context, ref providerRef, conn server.CloudConnection) (map[string]string, error) {
 	cg := ref.spec.Cognito
 	if cg == nil {
-		return nil, cloudErr(ReasonCloudError, "the provider has no cognito block")
+		return nil, cloudErr("the provider has no cognito block")
 	}
 	cl, err := c.newCognito(ctx, cg, ref.scope, ref.creds, conn)
 	if err != nil {
@@ -221,45 +195,21 @@ func (c Config) discoverCognito(ctx context.Context, ref providerRef, conn serve
 	defer cl.CloseIdleConnections()
 	out, err := cl.DescribeUserPool(ctx, &cip.DescribeUserPoolInput{UserPoolId: aws.String(cg.UserPoolID)})
 	if cognitoNotFound(err) {
-		return nil, cloudErr(ReasonTargetNotFound, "the user pool does not exist")
+		return nil, cloudErr("the user pool does not exist")
 	}
 	if err != nil {
 		return nil, cognitoErr(err)
 	}
 	if out.UserPool == nil {
-		return nil, cloudErr(ReasonCloudError, "the Cognito API answered with an unexpected document")
+		return nil, cloudErr("the Cognito API answered with an unexpected document")
 	}
 	d := map[string]string{
-		discoveredRegion: cg.Region, discoveredResourceID: cg.UserPoolID,
-		discoveredIssuer: cognitoIssuer(cg), discoveredEndpoint: cognitoHost(cg),
+		discoveredRegion: cg.Region, discoveredResourceID: cg.UserPoolID, discoveredEndpoint: cognitoHost(cg),
 	}
 	if id := aws.ToString(out.UserPool.Id); id != "" {
 		d[discoveredResourceID] = id
 	}
-	// arn:partition:cognito-idp:region:account:userpool/id
-	if parts := strings.Split(aws.ToString(out.UserPool.Arn), ":"); len(parts) > 4 && parts[4] != "" {
-		d[discoveredAccountID] = parts[4]
-	}
 	return d, nil
-}
-
-// recordCloud writes the outcome of discovery to the provider's status: the
-// CloudResolved condition and the derived endpoints. The probe helper writes the
-// status only when its own fields changed, so a change here clears
-// lastProbeTime, which makes it write.
-func recordCloud(st *oidcv1alpha1.IdentityProviderStatus, gen int64, err error) {
-	cond := metav1.Condition{Type: ConditionCloudResolved, Status: metav1.ConditionTrue, Reason: ReasonResolved,
-		Message: "the user pool was found in the cloud", ObservedGeneration: gen}
-	if err != nil {
-		var ce *CloudError
-		cond.Status, cond.Reason, cond.Message = metav1.ConditionFalse, ReasonCloudError, "the user pool could not be resolved"
-		if errors.As(err, &ce) {
-			cond.Reason, cond.Message = ce.Reason, ce.msg
-		}
-	}
-	if meta.SetStatusCondition(&st.Conditions, cond) {
-		st.LastProbeTime = nil
-	}
 }
 
 // cognitoState is what Observe read of an app client. The secret is the one

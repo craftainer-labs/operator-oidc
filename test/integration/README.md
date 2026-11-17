@@ -62,9 +62,9 @@ server 5.2.5, pinned by digest in `integration.yml`. It reads `MOTO_ENDPOINT`
 (required, `http://<private ip>:5000`) and needs no other service:
 
 - the probe describes the user pool and records `status.discovered` (region,
-  pool ID, account ID, issuer, hosted-UI host) and the `CloudResolved` condition,
-  a missing pool is `TargetNotFound`, and an `endpointOverride` is refused in
-  `strict` egress mode (`EndpointOverrideForbidden`);
+  pool ID, hosted-UI host), a missing pool fails the probe with a coarse "the user
+  pool does not exist", and an `endpointOverride` is refused in `strict` egress
+  mode;
 - an `OidcClient` becomes a Ready app client: the name, callback URLs and secret
   moto holds are the claim's, the binding Secret carries the app client ID, the
   secret, the issuer and the hosted-UI endpoints, a changed redirect URI is sent
